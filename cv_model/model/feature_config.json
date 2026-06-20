@@ -1,0 +1,21 @@
+{
+  "feature_names": [
+    "aspect_ratio",
+    "torso_angle",
+    "body_angle",
+    "span_ratio",
+    "nose_hip_vert",
+    "shoulder_ankle_vert",
+    "horiz_spread",
+    "y_variance",
+    "leg_angle",
+    "head_relative",
+    "knee_ankle_vert"
+  ],
+  "n_features": 11,
+  "n_train_samples": 660,
+  "n_real_samples": 575,
+  "n_synthetic_samples": 250,
+  "cv_accuracy": 0.9236363636363636,
+  "cv_f1": 0.9238726971261901
+}

@@ -1,0 +1,546 @@
+"""
+RobotHelper — Backend Server
+============================
+FastAPI WebSocket server that drives the rescue pipeline:
+
+    MacBook webcam (now) / rover camera (later)
+      -> OpenAI vision planner  (detect injured person + plan a move)
+      -> InterHuman live stream  (how does the person feel?)
+      -> safety-checked action plan -> Cyberwave SDK -> UGV Beast
+      -> streamed to the Next.js dashboard over WebSocket
+
+Detection is OpenAI-only by default; set USE_YOLO=true to re-enable the local
+YOLOv8-pose + classifier pre-filter (Phase 2). See PIPELINE.md for the design.
+
+Usage:
+    python server.py
+    python server.py --mock   # use mock robot frames
+"""
+
+import asyncio
+import base64
+import json
+import os
+import sys
+import threading
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import cv2
+import numpy as np
+from dotenv import load_dotenv
+import requests as http_requests
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+ROOT = Path(__file__).resolve().parent.parent
+BACKEND_DIR = Path(__file__).resolve().parent
+CV_MODEL_DIR = ROOT / "cv_model"
+sys.path.insert(0, str(CV_MODEL_DIR))
+sys.path.insert(0, str(BACKEND_DIR))
+
+load_dotenv(BACKEND_DIR / ".env")
+
+from agent import drive, feelings, planner  # noqa: E402
+
+# ── Configuration (env-overridable) ──────────────────────────────────
+TARGET_FPS = float(os.getenv("CAMERA_FPS", "7"))
+# "webcam" = MacBook camera (now); "robot" = UGV pan-tilt camera (later).
+CAMERA_SOURCE = os.getenv("CAMERA_SOURCE", "webcam").lower()
+USE_YOLO = os.getenv("USE_YOLO", "false").lower() in ("1", "true", "yes")
+PLAN_INTERVAL = float(os.getenv("AGENT_PLAN_INTERVAL", "4.0"))  # seconds between planner calls
+CYBERWAVE_AFFECT = os.getenv("CYBERWAVE_AFFECT", "simulation")  # "simulation" or "live"
+AGENT_DRY_RUN = os.getenv("AGENT_DRY_RUN", "false").lower() in ("1", "true", "yes")
+
+
+class State:
+    def __init__(self):
+        self.pose_model = None
+        self.classifier = None
+        self.robot = None
+        self.cw = None
+        self.robot_connected = False
+        self.camera_source = "none"
+        self.frame_b64: str | None = None
+        self.raw_frame_b64: str | None = None      # un-annotated JPEG for the planner
+        self.detections: list[dict] = []
+        self.lock = threading.Lock()
+        self.clients: list[WebSocket] = []
+        self.running = True
+        self.use_mock = False
+
+        # Rescue agent
+        self.ih_client: "feelings.InterHumanClient | None" = None
+        self.drive_exec: "drive.DriveExecutor | None" = None
+        self.agent: dict = {
+            "enabled": False,
+            "injured": False,
+            "injured_count": 0,
+            "assessment": "",
+            "say": "",
+            "feelings_summary": "",
+            "actions": [],          # planned (validated/clamped) actions
+            "executed": [],         # per-action execution results
+            "status": "idle",       # idle | scanning | planning | acting | error
+            "error": None,
+            "updated": 0.0,
+        }
+        self.feelings: dict = {
+            "connected": False,
+            "engagement": "unknown",
+            "signals": [],
+            "quality": None,
+            "updated": 0.0,
+        }
+
+
+state = State()
+
+
+def load_models():
+    """Load the local YOLO pre-filter only when USE_YOLO is enabled (Phase 2)."""
+    if not USE_YOLO:
+        print("[server] Detection mode: OpenAI vision only (USE_YOLO=false).")
+        return
+    try:
+        from ultralytics import YOLO
+        import joblib
+        from inference import CLASSIFIER_PATH
+
+        print("[server] Loading local YOLO pre-filter...")
+        state.pose_model = YOLO("yolov8s-pose.pt")
+        state.classifier = joblib.load(CLASSIFIER_PATH)
+        print("[server] YOLO pre-filter ready.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[server] Could not load YOLO models ({e}); continuing OpenAI-only.")
+        state.pose_model = None
+        state.classifier = None
+
+
+def connect_robot():
+    try:
+        from cyberwave import Cyberwave
+
+        api_key = os.getenv("CYBERWAVE_API_KEY", "")
+        twin_uuid = os.getenv("CYBERWAVE_TWIN_UUID", "")
+        env_id = os.getenv("CYBERWAVE_ENVIRONMENT_ID", "") or None
+        if not api_key or not twin_uuid:
+            print("[robot] No credentials — robot offline (agent runs in no-robot mode)")
+            return
+        cw = Cyberwave(api_key=api_key)
+        state.cw = cw
+        if env_id:
+            state.robot = cw.twin(twin_id=twin_uuid, environment_id=env_id)
+        else:
+            state.robot = cw.twin(twin_id=twin_uuid)
+        state.robot_connected = True
+        print(f"[robot] Connected: {state.robot.uuid}  (affect={CYBERWAVE_AFFECT})")
+    except Exception as e:
+        print(f"[robot] Connection failed: {e}")
+        state.robot_connected = False
+
+
+def _encode_jpeg_b64(frame: np.ndarray) -> str:
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return base64.b64encode(buf.tobytes()).decode()
+
+
+def camera_loop():
+    process_frame = None
+    if USE_YOLO:
+        try:
+            from inference import process_frame  # noqa: F811
+        except Exception as e:  # noqa: BLE001
+            print(f"[camera] YOLO inference unavailable ({e})")
+
+    webcam = None
+
+    while state.running:
+        frame = None
+
+        if CAMERA_SOURCE == "robot" and state.robot and state.robot_connected:
+            try:
+                raw = state.robot.get_latest_frame(mock=state.use_mock)
+                if raw and len(raw) > 200:
+                    arr = np.frombuffer(raw, dtype=np.uint8)
+                    decoded = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if decoded is not None:
+                        frame = decoded
+                        state.camera_source = "robot"
+            except Exception:
+                pass
+
+        if frame is None:
+            if webcam is None or not webcam.isOpened():
+                webcam = cv2.VideoCapture(0)
+                if not webcam.isOpened():
+                    state.camera_source = "none"
+                    time.sleep(1)
+                    continue
+            ret, frame = webcam.read()
+            if not ret or frame is None:
+                state.camera_source = "none"
+                time.sleep(0.1)
+                continue
+            state.camera_source = "webcam"
+
+        if frame is not None:
+            # Feed the InterHuman segment buffer with the raw frame.
+            if state.ih_client is not None:
+                state.ih_client.push_frame(frame)
+
+            raw_b64 = _encode_jpeg_b64(frame)
+
+            if USE_YOLO and process_frame and state.pose_model and state.classifier:
+                try:
+                    annotated, dets = process_frame(
+                        frame, state.pose_model, state.classifier
+                    )
+                    with state.lock:
+                        state.raw_frame_b64 = raw_b64
+                        state.frame_b64 = _encode_jpeg_b64(annotated)
+                        state.detections = dets
+                except Exception as e:  # noqa: BLE001
+                    print(f"[cv] {e}")
+            else:
+                # OpenAI-only mode: stream the raw frame; detections come from the agent.
+                with state.lock:
+                    state.raw_frame_b64 = raw_b64
+                    state.frame_b64 = raw_b64
+
+        time.sleep(1.0 / TARGET_FPS)
+
+    if webcam:
+        webcam.release()
+
+
+def _current_feelings() -> dict:
+    if state.ih_client is not None:
+        return dict(state.ih_client.latest)
+    return dict(state.feelings)
+
+
+def _synth_detections(injured_count: int) -> list[dict]:
+    """OpenAI-only mode has no bounding boxes; emit placeholder INJURED detections
+    so the existing map-pin / video-overlay logic keeps working."""
+    return [
+        {"bbox": [0, 0, 0, 0], "label": "INJURED", "confidence": 0.9}
+        for _ in range(max(0, injured_count))
+    ]
+
+
+async def planner_loop():
+    """Periodically: latest frame + feelings -> OpenAI plan -> safety -> rover."""
+    if not os.getenv("OPENAI_API_KEY", ""):
+        print("[agent] OPENAI_API_KEY not set — planner disabled.")
+        with state.lock:
+            state.agent["enabled"] = False
+            state.agent["status"] = "disabled"
+        return
+
+    print(f"[agent] Planner active (model={os.getenv('OPENAI_MODEL', planner.DEFAULT_MODEL)}, "
+          f"interval={PLAN_INTERVAL}s, affect={CYBERWAVE_AFFECT}, dry_run={AGENT_DRY_RUN}).")
+    with state.lock:
+        state.agent["enabled"] = True
+        state.agent["status"] = "scanning"
+
+    while state.running:
+        await asyncio.sleep(PLAN_INTERVAL)
+
+        with state.lock:
+            frame_b64 = state.raw_frame_b64
+        if not frame_b64:
+            continue
+
+        feelings_now = _current_feelings()
+        with state.lock:
+            state.feelings = feelings_now
+            state.agent["status"] = "planning"
+
+        result = await asyncio.to_thread(planner.plan, frame_b64, feelings_now)
+
+        if not result.get("ok"):
+            with state.lock:
+                state.agent["status"] = "error"
+                state.agent["error"] = result.get("error")
+                state.agent["feelings_summary"] = result.get("feelings_summary", "")
+            print(f"[agent] plan error: {result.get('error')}")
+            continue
+
+        plan_obj = result.get("plan", {}) or {}
+        injured = bool(plan_obj.get("injured", False))
+        injured_count = int(plan_obj.get("injured_count", 0) or 0)
+        assessment = str(plan_obj.get("assessment", ""))
+        say = str(plan_obj.get("say", ""))
+
+        actions, errors = drive.validate_and_clamp(plan_obj.get("actions"))
+        executed: list[dict] = []
+        status = "scanning"
+
+        if errors:
+            status = "error"
+            print(f"[agent] plan rejected by safety validator: {errors}")
+        elif injured and actions and state.drive_exec is not None:
+            status = "acting"
+            with state.lock:
+                state.agent["status"] = status
+                state.agent["actions"] = [a.to_dict() for a in actions]
+            executed = await asyncio.to_thread(state.drive_exec.execute, actions)
+            status = "scanning"
+
+        with state.lock:
+            state.agent.update({
+                "injured": injured,
+                "injured_count": injured_count,
+                "assessment": assessment,
+                "say": say,
+                "feelings_summary": result.get("feelings_summary", ""),
+                "actions": [a.to_dict() for a in (actions or [])],
+                "executed": executed,
+                "status": status,
+                "error": "; ".join(errors) if errors else None,
+                "updated": time.time(),
+            })
+            # Drive the map / video overlay (only meaningful in OpenAI-only mode).
+            if not USE_YOLO:
+                state.detections = _synth_detections(injured_count if injured else 0)
+
+
+async def broadcaster():
+    while state.running:
+        if state.clients:
+            with state.lock:
+                fb = state.frame_b64
+                dets = list(state.detections)
+                agent_snapshot = dict(state.agent)
+                feelings_snapshot = _current_feelings()
+
+            if fb:
+                payload = json.dumps({
+                    "type": "frame",
+                    "frame": fb,
+                    "detections": dets,
+                    "camera_source": state.camera_source,
+                    "feelings": feelings_snapshot,
+                    "agent": agent_snapshot,
+                })
+                gone: list[WebSocket] = []
+                for ws in list(state.clients):
+                    try:
+                        await ws.send_text(payload)
+                    except Exception:
+                        gone.append(ws)
+                for ws in gone:
+                    if ws in state.clients:
+                        state.clients.remove(ws)
+
+        await asyncio.sleep(1.0 / 7)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    load_models()
+    connect_robot()
+
+    # Rescue agent wiring
+    state.drive_exec = drive.DriveExecutor(
+        robot=state.robot, cw=state.cw, affect=CYBERWAVE_AFFECT, dry_run=AGENT_DRY_RUN
+    )
+    ih_key = os.getenv("INTERHUMAN_API_KEY", "")
+    state.ih_client = feelings.InterHumanClient(api_key=ih_key, fps=TARGET_FPS)
+
+    threading.Thread(target=camera_loop, daemon=True).start()
+
+    tasks = [
+        asyncio.create_task(broadcaster()),
+        asyncio.create_task(planner_loop()),
+        asyncio.create_task(state.ih_client.run()),
+    ]
+    yield
+    state.running = False
+    if state.ih_client:
+        state.ih_client.stop()
+    for task in tasks:
+        task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+SMALLEST_TTS_URL = "https://api.smallest.ai/waves/v1/lightning-v2/get_speech"
+
+DUMMY_NEWS = {
+    "headline": "Wildfire intensifies in Temescal Canyon — deploy more search robots recommended",
+    "summary": (
+        "Authorities report the Temescal Canyon wildfire has grown by 800 acres "
+        "overnight. Evacuation orders expanded to zones B-7 through B-12. "
+        "Search-and-rescue teams are urged to deploy additional robotic units "
+        "to cover the widening perimeter."
+    ),
+    "severity": "critical",
+    "source": "default",
+    "search_zone_expanded": True,
+}
+
+
+SGAI_BASE_URL = "https://sgai-api-v2.onrender.com"
+
+
+@app.get("/api/news")
+async def news_endpoint():
+    api_key = os.getenv("SCRAPEGRAPH_API_KEY", "")
+    if not api_key:
+        print("[news] No SCRAPEGRAPH_API_KEY — returning dummy data")
+        return DUMMY_NEWS
+
+    try:
+        import httpx
+
+        headers = {
+            "SGAI-APIKEY": api_key,
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{SGAI_BASE_URL}/api/v1/extract",
+                headers=headers,
+                json={
+                    "url": "https://www.fire.ca.gov/incidents",
+                    "prompt": (
+                        "Extract the most recent and urgent wildfire incident. "
+                        "Return the headline, a 1-2 sentence summary, and "
+                        "severity (critical, high, moderate, or low)."
+                    ),
+                    "schema": {
+                        "headline": "string",
+                        "summary": "string",
+                        "severity": "string",
+                    },
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        result = data.get("json") or data.get("result") or {}
+        if isinstance(result, str):
+            result = json.loads(result)
+
+        if result and result.get("headline"):
+            return {
+                "headline": result["headline"],
+                "summary": result.get("summary", DUMMY_NEWS["summary"]),
+                "severity": result.get("severity", "high"),
+                "source": "scrapegraph",
+                "search_zone_expanded": True,
+            }
+
+        print("[news] ScrapeGraph extract returned empty — using dummy data")
+        return DUMMY_NEWS
+
+    except Exception as e:
+        print(f"[news] ScrapeGraph error: {e} — returning dummy data")
+        return DUMMY_NEWS
+
+
+class TTSRequest(BaseModel):
+    text: str = "Do you need assistance?"
+    voice_id: str = "alice"
+
+
+@app.post("/api/tts")
+async def tts_endpoint(req: TTSRequest):
+    api_key = os.getenv("SMALLEST_API_KEY", "")
+    if not api_key:
+        return Response(content=b"", media_type="audio/wav", status_code=503)
+
+    try:
+        resp = http_requests.post(
+            SMALLEST_TTS_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": req.text,
+                "voice_id": req.voice_id,
+                "sample_rate": 24000,
+                "speed": 1.0,
+                "language": "en",
+                "output_format": "wav",
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            print(f"[tts] smallest.ai returned {resp.status_code}: {resp.text}")
+            return Response(content=b"", media_type="audio/wav", status_code=502)
+        return Response(content=resp.content, media_type="audio/wav")
+    except Exception as e:
+        print(f"[tts] Error: {e}")
+        return Response(content=b"", media_type="audio/wav", status_code=502)
+
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket):
+    await ws.accept()
+    state.clients.append(ws)
+
+    await ws.send_text(json.dumps({
+        "type": "status",
+        "robot_connected": state.robot_connected,
+        "camera_source": state.camera_source,
+    }))
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+
+            if msg.get("type") == "command" and state.drive_exec is not None:
+                cmd = msg.get("command")
+                # Manual WASD -> UGV Beast verbs, routed through the safety-clamped
+                # executor (so manual control respects the same limits + affect mode).
+                verb_map = {
+                    "forward": {"type": "move_forward", "distance": 0.5},
+                    "backward": {"type": "move_backward", "distance": 0.5},
+                    "left": {"type": "turn_left", "angle": 0.26},   # ~15 degrees
+                    "right": {"type": "turn_right", "angle": 0.26},
+                }
+                try:
+                    if cmd in verb_map:
+                        acts, _ = drive.validate_and_clamp([verb_map[cmd]])
+                        await asyncio.to_thread(state.drive_exec.execute, acts)
+                    elif cmd == "approach":
+                        dist = float(msg.get("distance", 1.0))
+                        acts, _ = drive.validate_and_clamp(
+                            [{"type": "move_forward", "distance": dist}]
+                        )
+                        await asyncio.to_thread(state.drive_exec.execute, acts)
+                        print(f"[cmd] approach: move_forward {dist} m (clamped)")
+                except Exception as e:
+                    print(f"[cmd] {e}")
+    except WebSocketDisconnect:
+        if ws in state.clients:
+            state.clients.remove(ws)
+
+
+if __name__ == "__main__":
+    import argparse
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="RobotHelper Backend Server")
+    parser.add_argument("--mock", action="store_true",
+                        help="Use mock robot frames")
+    args = parser.parse_args()
+    state.use_mock = args.mock
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)

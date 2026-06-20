@@ -1,0 +1,4 @@
+.venv/
+.env
+*.pt
+injury_detection.ipynb
