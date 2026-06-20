@@ -100,9 +100,11 @@ export default function Home() {
       <header className="border-b border-white/10 bg-slate-950/50 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center text-sm font-bold">
-              🤖
-            </div>
+            <img 
+              src="/logo.png" 
+              alt="RobotHelper Logo" 
+              className="w-10 h-10 rounded-lg object-contain"
+            />
             <div>
               <h1 className="text-lg font-bold tracking-tight">RobotHelper</h1>
               <p className="text-xs text-zinc-500">Wake-Up Robot</p>
