@@ -34,7 +34,7 @@ import numpy as np
 from dotenv import load_dotenv
 import requests as http_requests
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -47,6 +47,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 load_dotenv(BACKEND_DIR / ".env")
 
 from agent import drive, feelings, planner  # noqa: E402
+from pdf_report import PDFReportGenerator  # noqa: E402
 
 # ── Configuration (env-overridable) ──────────────────────────────────
 TARGET_FPS = float(os.getenv("CAMERA_FPS", "7"))
@@ -101,6 +102,12 @@ class State:
             "quality": None,
             "error": None,
             "updated": 0.0,
+            # Enhanced emotional state fields
+            "emotional_state": "unknown",
+            "facial_expressions": [],
+            "social_signals": [],
+            "sentiment": "neutral",
+            "attention": "unknown",
         }
         # Emotion logging for wake-up reports
         self.emotion_log: list[dict] = []
@@ -530,7 +537,7 @@ app.add_middleware(
 )
 
 
-SMALLEST_TTS_URL = "https://api.smallest.ai/waves/v1/lightning-v2/get_speech"
+SMALLEST_TTS_URL = "https://api.smallest.ai/api/v1/lightning-v3.1/get_speech"
 
 # ── Daily news feed (ScrapeGraph) ─────────────────────────────────────
 # Once the person is awake, the dashboard pulls a short news feed via the
@@ -695,70 +702,107 @@ async def news_endpoint():
 
 class TTSRequest(BaseModel):
     text: str = "Good morning! Time to wake up!"
-    voice_id: str = "alice"
+    voice: str = "alloy"  # OpenAI voice: alloy, echo, fable, onyx, nova, shimmer
+    model: str = "tts-1"  # tts-1 or tts-1-hd for higher quality
 
 
 @app.post("/api/tts")
 async def tts_endpoint(req: TTSRequest):
-    api_key = os.getenv("SMALLEST_API_KEY", "")
-    if not api_key:
-        return Response(content=b"", media_type="audio/wav", status_code=503)
+    # Try OpenAI TTS first (high quality, uses existing API key)
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if openai_key:
+        try:
+            print(f"[tts] Using OpenAI TTS: voice={req.voice}, model={req.model}")
+            resp = http_requests.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {openai_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": req.model,
+                    "input": req.text,
+                    "voice": req.voice,
+                    "response_format": "mp3",
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                print(f"[tts] OpenAI TTS success: {len(resp.content)} bytes")
+                return Response(content=resp.content, media_type="audio/mpeg")
+            else:
+                print(f"[tts] OpenAI TTS failed {resp.status_code}: {resp.text}")
+        except Exception as e:
+            print(f"[tts] OpenAI TTS error: {e}")
 
-    try:
-        resp = http_requests.post(
-            SMALLEST_TTS_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "text": req.text,
-                "voice_id": req.voice_id,
-                "sample_rate": 24000,
-                "speed": 1.0,
-                "language": "en",
-                "output_format": "wav",
-            },
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            print(f"[tts] smallest.ai returned {resp.status_code}: {resp.text}")
-            return Response(content=b"", media_type="audio/wav", status_code=502)
-        return Response(content=resp.content, media_type="audio/wav")
-    except Exception as e:
-        print(f"[tts] Error: {e}")
-        return Response(content=b"", media_type="audio/wav", status_code=502)
+    # Fallback to smallest.ai if configured
+    smallest_key = os.getenv("SMALLEST_API_KEY", "")
+    if smallest_key:
+        try:
+            print(f"[tts] Using smallest.ai fallback")
+            resp = http_requests.post(
+                SMALLEST_TTS_URL,
+                headers={
+                    "Authorization": f"Bearer {smallest_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": req.text,
+                    "voice_id": "luna",  # smallest.ai v3.1 voice
+                    "sample_rate": 24000,
+                    "speed": 1.0,
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                print(f"[tts] smallest.ai success: {len(resp.content)} bytes")
+                return Response(content=resp.content, media_type="audio/mpeg")
+            else:
+                print(f"[tts] smallest.ai failed {resp.status_code}: {resp.text}")
+        except Exception as e:
+            print(f"[tts] smallest.ai error: {e}")
+
+    # Both APIs failed
+    print("[tts] All TTS APIs failed, returning error")
+    return Response(content=b"", media_type="audio/wav", status_code=503)
 
 
 @app.get("/api/emotion-report")
 async def emotion_report():
-    """Download a JSON report of emotions logged during wake-up."""
+    """Download the emotion log as a formatted PDF report."""
     with state.lock:
         emotion_data = list(state.emotion_log)
         logging_active = state.emotion_logging_start is not None
     
     if not emotion_data and not logging_active:
-        return {"error": "No emotion data available. Complete a wake-up cycle first."}
-    
-    report = {
-        "report_generated": time.time(),
-        "logging_active": logging_active,
-        "total_entries": len(emotion_data),
-        "wake_up_session": {
-            "start_time": state.emotion_logging_start if logging_active else 
-                         (emotion_data[0]["timestamp"] if emotion_data else None),
-            "duration_seconds": (time.time() - state.emotion_logging_start) if logging_active else
-                              (emotion_data[-1]["timestamp"] - emotion_data[0]["timestamp"] if emotion_data else 0),
-        },
-        "emotion_timeline": emotion_data,
-        "summary": {
-            "avg_grogginess": sum(e.get("grogginess", 0) for e in emotion_data) / len(emotion_data) if emotion_data else 0,
-            "engagement_changes": len(set(e.get("engagement") for e in emotion_data)) if emotion_data else 0,
-            "total_signals_detected": sum(len(e.get("signals", [])) for e in emotion_data) if emotion_data else 0,
-        } if emotion_data else None
-    }
-    
-    return report
+        return JSONResponse(
+            content={"error": "No emotion data available. Complete a wake-up cycle first."},
+            status_code=404,
+        )
+
+    try:
+        generator = PDFReportGenerator()
+        pdf_bytes = generator.generate_report(
+            emotion_log=emotion_data,
+            agent_data=dict(state.agent),
+            feelings_data=dict(state.feelings),
+        )
+
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"wake_up_report_{timestamp}.pdf"
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        print(f"[report] Error generating PDF: {e}")
+        return JSONResponse(
+            content={"error": f"Failed to generate report: {str(e)}"},
+            status_code=500,
+        )
 
 
 @app.post("/api/emotion-report/clear")
@@ -768,6 +812,16 @@ async def clear_emotion_report():
         state.emotion_log = []
         state.emotion_logging_start = None
     return {"status": "cleared", "message": "Emotion log cleared"}
+
+
+@app.post("/api/feelings/clear-error")
+async def clear_feelings_error():
+    """Clear the InterHuman error state."""
+    with state.lock:
+        state.feelings["error"] = None
+        if state.ih_client:
+            state.ih_client.latest["error"] = None
+    return {"status": "cleared", "message": "Feelings error cleared"}
 
 
 @app.websocket("/ws")

@@ -59,6 +59,12 @@ class InterHumanClient:
             "quality": None,
             "error": None,
             "updated": 0.0,
+            # Enhanced emotional state fields
+            "emotional_state": "unknown",
+            "facial_expressions": [],
+            "social_signals": [],
+            "sentiment": "neutral",
+            "attention": "unknown",
         }
 
     # ── frame intake (called from the camera thread) ──────────────────
@@ -154,28 +160,69 @@ class InterHumanClient:
     def _handle_message(self, payload: dict) -> None:
         msg_type = payload.get("type")
         data = payload.get("data", {}) or {}
+        
+        if self.debug:
+            print(f"[interhuman] Received message type: {msg_type}")
+        
         if msg_type == "engagement.updated":
             self.latest["engagement"] = data.get("state", "unknown")
             if self.debug:
                 print(f"[interhuman] <- engagement: {self.latest['engagement']}")
         elif msg_type == "signal.detected":
             signals = data.get("signals", []) or []
-            self.latest["signals"] = [
-                {
-                    "type": s.get("type"),
-                    "probability": s.get("probability"),
-                    "rationale": s.get("rationale"),
-                }
-                for s in signals
-            ]
+            # Merge new signals with existing ones (avoid duplicates)
+            existing_signal_types = {s.get("type") for s in self.latest["signals"]}
+            for s in signals:
+                if s.get("type") not in existing_signal_types:
+                    self.latest["signals"].append({
+                        "type": s.get("type"),
+                        "probability": s.get("probability"),
+                        "rationale": s.get("rationale"),
+                    })
             if self.debug and signals:
                 rendered = ", ".join(f"{s.get('type')}({s.get('probability')})" for s in signals)
                 print(f"[interhuman] <- signals: {rendered}")
+                print(f"[interhuman] Total signals: {len(self.latest['signals'])}")
         elif msg_type == "conversation_quality.updated":
             self.latest["quality"] = data.get("overall")
+            if self.debug:
+                print(f"[interhuman] <- quality: {self.latest['quality']}")
+        elif msg_type == "emotional_state.updated":
+            self.latest["emotional_state"] = data.get("state", "unknown")
+            if self.debug:
+                print(f"[interhuman] <- emotional_state: {self.latest['emotional_state']}")
+        elif msg_type == "facial_expressions.updated":
+            self.latest["facial_expressions"] = data.get("expressions", [])
+            if self.debug:
+                print(f"[interhuman] <- facial_expressions: {len(self.latest['facial_expressions'])} expressions")
+        elif msg_type == "social_signals.updated":
+            self.latest["social_signals"] = data.get("signals", [])
+            if self.debug:
+                print(f"[interhuman] <- social_signals: {len(self.latest['social_signals'])} signals")
+        elif msg_type == "sentiment.updated":
+            self.latest["sentiment"] = data.get("sentiment", "neutral")
+            if self.debug:
+                print(f"[interhuman] <- sentiment: {self.latest['sentiment']}")
+        elif msg_type == "attention.updated":
+            self.latest["attention"] = data.get("attention", "unknown")
+            if self.debug:
+                print(f"[interhuman] <- attention: {self.latest['attention']}")
+        elif msg_type == "signal.ended":
+            ended_signals = data.get("signals", []) or []
+            # Remove ended signals from the list
+            ended_types = {s.get("type") for s in ended_signals}
+            self.latest["signals"] = [
+                s for s in self.latest["signals"] if s.get("type") not in ended_types
+            ]
+            if self.debug and ended_signals:
+                print(f"[interhuman] <- signals ended: {', '.join(s.get('type') for s in ended_signals)}")
         elif msg_type == "error":
             self.latest["error"] = data
             print(f"[interhuman] server error: {data}")
+        else:
+            if self.debug:
+                print(f"[interhuman] Unhandled message type: {msg_type}")
+        
         self.latest["updated"] = time.time()
 
     # ── connection helper (handles websockets API differences) ────────
@@ -276,7 +323,20 @@ class InterHumanClient:
             self.latest["updated"] = time.time()
             print(f"[interhuman] Error cleared, updated timestamp: {self.latest['updated']}")
             try:
-                await ws.send(json.dumps({"include": ["conversation_quality_overall"]}))
+                # Request more comprehensive emotional signals
+                config = {
+                    "include": [
+                        "conversation_quality_overall",
+                        "emotional_state",
+                        "facial_expressions",
+                        "social_signals",
+                        "engagement_level",
+                        "attention",
+                        "sentiment"
+                    ]
+                }
+                await ws.send(json.dumps(config))
+                print(f"[interhuman] Sent config request: {config}")
                 sender = asyncio.create_task(self._sender(ws))
                 receiver = asyncio.create_task(self._receiver(ws))
                 done, pending = await asyncio.wait(

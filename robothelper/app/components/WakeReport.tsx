@@ -74,22 +74,32 @@ export default function WakeReport({ agent, feelings }: Props) {
     setDownloading(true);
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000"}/api/emotion-report`);
-      const data = await response.json();
       
-      if (data.error) {
-        alert(data.error);
+      if (!response.ok) {
+        const data = await response.json();
+        alert(data.error || "Failed to download report");
         return;
       }
 
-      // Create a downloadable JSON file
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      // Handle PDF download
+      const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `wake-up-emotion-report-${new Date().toISOString().split("T")[0]}.json`;
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = response.headers.get("Content-Disposition");
+      let filename = `wake-up-emotion-report-${new Date().toISOString().split("T")[0]}.pdf`;
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       URL.revokeObjectURL(url);
     } catch (error) {
       console.error("Failed to download emotion report:", error);
@@ -208,9 +218,45 @@ export default function WakeReport({ agent, feelings }: Props) {
               ⚠️ InterHuman error: {typeof feelings.error === 'string' ? feelings.error : 'Connection failed'}
             </div>
           )}
-          {feelings.signals.length > 0 ? (
+          
+          {/* Enhanced emotional spectrum */}
+          <div className="grid grid-cols-2 gap-1 mt-2">
+            {feelings.sentiment && feelings.sentiment !== "neutral" && (
+              <div className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-300">
+                Sentiment: {feelings.sentiment}
+              </div>
+            )}
+            {feelings.emotional_state && feelings.emotional_state !== "unknown" && (
+              <div className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 border border-blue-500/30 text-blue-300">
+                State: {feelings.emotional_state}
+              </div>
+            )}
+            {feelings.attention && feelings.attention !== "unknown" && (
+              <div className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/30 text-amber-300">
+                Attention: {feelings.attention}
+              </div>
+            )}
+            {feelings.quality && typeof feelings.quality === 'object' && feelings.quality.quality_index && (
+              <div className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/30 text-cyan-300">
+                Quality: {feelings.quality.quality_index}/10
+              </div>
+            )}
+            {feelings.quality && typeof feelings.quality === 'number' && (
+              <div className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/30 text-cyan-300">
+                Quality: {feelings.quality}/10
+              </div>
+            )}
+            {feelings.quality && typeof feelings.quality === 'object' && feelings.quality.energy && feelings.quality.energy > 50 && (
+              <div className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/20 border border-orange-500/30 text-orange-300">
+                Energy: {Math.round(feelings.quality.energy)}%
+              </div>
+            )}
+          </div>
+          
+          {/* Social signals */}
+          {(feelings.signals.length > 0 || (feelings.social_signals && feelings.social_signals.length > 0)) ? (
             <div className="flex flex-wrap gap-1">
-              {feelings.signals.slice(0, 8).map((s, i) => (
+              {[...feelings.signals, ...(feelings.social_signals || [])].slice(0, 8).map((s, i) => (
                 <span
                   key={`${s.type}-${i}`}
                   className={`px-1.5 py-0.5 rounded border text-[9px] ${

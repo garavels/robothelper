@@ -18,8 +18,24 @@ export interface FeelingsState {
   connected: boolean;
   engagement: string;
   signals: SocialSignal[];
-  quality: number | null;
+  quality: number | null | QualityMetrics;
   updated: number;
+  error: string | null;
+  // Enhanced emotional fields
+  emotional_state?: string;
+  facial_expressions?: string[];
+  social_signals?: SocialSignal[];
+  sentiment?: string;
+  attention?: string;
+}
+
+export interface QualityMetrics {
+  quality_index: number;
+  clarity: number;
+  authority: number;
+  energy: number;
+  rapport: number;
+  learning: number;
 }
 
 export interface PlannedAction {
@@ -58,6 +74,12 @@ const DEFAULT_FEELINGS: FeelingsState = {
   signals: [],
   quality: null,
   updated: 0,
+  error: null,
+  emotional_state: "unknown",
+  facial_expressions: [],
+  social_signals: [],
+  sentiment: "neutral",
+  attention: "unknown",
 };
 
 const DEFAULT_AGENT: AgentState = {

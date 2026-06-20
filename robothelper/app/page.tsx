@@ -13,6 +13,7 @@ const BACKEND_URL =
 export default function Home() {
   const [cameraOn, setCameraOn] = useState(true);
   const [showNews, setShowNews] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState("alloy");
 
   const backend = useBackend();
   const { telemetry, mqttConnected } = useCyberwave();
@@ -21,6 +22,30 @@ export default function Home() {
   useEffect(() => {
     console.log('[Agent State Update]', backend.agent);
   }, [backend.agent]);
+
+  // Clear stale InterHuman errors on page load
+  useEffect(() => {
+    const clearStaleError = async () => {
+      try {
+        await fetch(`${BACKEND_URL}/api/feelings/clear-error`, {
+          method: "POST",
+        });
+        console.log('[Feelings] Cleared stale error state');
+      } catch (err) {
+        console.log('[Feelings] Could not clear error (backend may not be ready)');
+      }
+    };
+    clearStaleError();
+    
+    // Periodically clear error if InterHuman is connected
+    const interval = setInterval(() => {
+      if (backend.feelings.connected && backend.feelings.error) {
+        clearStaleError();
+      }
+    }, 10000); // Check every 10 seconds
+    
+    return () => clearInterval(interval);
+  }, [backend.feelings.connected, backend.feelings.error]);
 
   const lastAgentSpeakRef = useRef<{ text: string; at: number }>({
     text: "",
@@ -31,10 +56,52 @@ export default function Home() {
   const playTTS = useCallback(async (text: string) => {
     console.log('[TTS] Attempting to speak:', text);
     
-    // Always use browser TTS as primary since it's more reliable
+    // Try API first for high-quality voice
+    try {
+      console.log(`[TTS] Trying API TTS for high-quality voice: ${selectedVoice}`);
+      console.log(`[TTS] Request payload:`, { text, voice: selectedVoice, model: "tts-1" });
+      const resp = await fetch(`${BACKEND_URL}/api/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          text,
+          voice: selectedVoice,  // OpenAI voice: alloy, echo, fable, onyx, nova, shimmer
+          model: "tts-1"  // or tts-1-hd for higher quality
+        }),
+      });
+      if (resp.ok) {
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        await new Promise<void>((resolve) => {
+          audio.onended = () => {
+            console.log('[TTS] API TTS completed');
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          audio.onerror = () => {
+            console.error('[TTS] API TTS playback error');
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          audio.play().catch(() => {
+            console.error('[TTS] API TTS play failed');
+            URL.revokeObjectURL(url);
+            resolve();
+          });
+        });
+        return;
+      } else {
+        console.log(`[TTS] API TTS failed with status ${resp.status}`);
+      }
+    } catch (err) {
+      console.error('[TTS] API TTS error:', err);
+    }
+
+    // Fallback to browser TTS if API fails
     if ('speechSynthesis' in window) {
       try {
-        console.log('[TTS] Using browser speech synthesis');
+        console.log('[TTS] Falling back to browser speech synthesis');
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 1.0;
         utterance.pitch = 1.0;
@@ -45,40 +112,13 @@ export default function Home() {
         utterance.onerror = (e) => console.error('[TTS] Browser TTS error:', e);
         
         speechSynthesis.speak(utterance);
-        return;
       } catch (err) {
         console.error('[TTS] Browser TTS failed:', err);
       }
     } else {
       console.log('[TTS] Browser speech synthesis not available');
     }
-    
-    // Fallback to API if browser TTS fails
-    try {
-      console.log('[TTS] Trying API fallback');
-      const resp = await fetch(`${BACKEND_URL}/api/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (resp.ok) {
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        await new Promise<void>((resolve) => {
-          audio.onended = () => resolve();
-          audio.onerror = () => resolve();
-          audio.play().catch(() => resolve());
-        });
-        URL.revokeObjectURL(url);
-        console.log('[TTS] API TTS completed');
-      } else {
-        console.log('[TTS] API also failed, no audio options left');
-      }
-    } catch (err) {
-      console.error('[TTS] API fallback failed:', err);
-    }
-  }, []);
+  }, [selectedVoice]);
 
   // --- Speak wake-up line (repeated while asleep, different message when awake) ---
   useEffect(() => {
@@ -123,7 +163,7 @@ export default function Home() {
     playTTS(message).catch(err => {
       console.error('[TTS] Error playing audio:', err);
     });
-  }, [backend.agent.asleep, backend.agent.phase, backend.agent.say, cameraOn, playTTS]);
+  }, [backend.agent.asleep, backend.agent.phase, backend.agent.say, cameraOn, playTTS, selectedVoice]);
 
   // --- Show news feed when awake ---
   useEffect(() => {
@@ -184,6 +224,18 @@ export default function Home() {
                 {backend.connected ? "Backend" : "Offline"}
               </span>
             </div>
+            <select
+              value={selectedVoice}
+              onChange={(e) => setSelectedVoice(e.target.value)}
+              className="px-2 py-1.5 rounded-md bg-white/5 border border-white/10 text-xs hover:bg-white/10 transition-colors text-zinc-300"
+            >
+              <option value="alloy">Alloy (neutral)</option>
+              <option value="echo">Echo (deep male)</option>
+              <option value="fable">Fable (British)</option>
+              <option value="onyx">Onyx (deep male)</option>
+              <option value="nova">Nova (female)</option>
+              <option value="shimmer">Shimmer (soft female)</option>
+            </select>
             <button
               onClick={() => setCameraOn(!cameraOn)}
               className="px-3 py-1.5 rounded-md bg-white/5 border border-white/10 text-xs hover:bg-white/10 transition-colors"
