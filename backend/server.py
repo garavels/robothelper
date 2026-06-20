@@ -53,6 +53,7 @@ CAMERA_SOURCE = os.getenv("CAMERA_SOURCE", "webcam").lower()
 USE_YOLO = os.getenv("USE_YOLO", "false").lower() in ("1", "true", "yes")
 PLAN_INTERVAL = float(os.getenv("AGENT_PLAN_INTERVAL", "4.0"))  # seconds between planner calls
 CYBERWAVE_AFFECT = os.getenv("CYBERWAVE_AFFECT", "simulation")  # "simulation" or "live"
+CYBERWAVE_ASSET = os.getenv("CYBERWAVE_ASSET", "waveshare/ugv-beast")  # catalog asset key
 AGENT_DRY_RUN = os.getenv("AGENT_DRY_RUN", "false").lower() in ("1", "true", "yes")
 
 
@@ -131,13 +132,14 @@ def connect_robot():
             print("[robot] No credentials — robot offline (agent runs in no-robot mode)")
             return
         cw = Cyberwave(api_key=api_key)
+        cw.affect(CYBERWAVE_AFFECT)  # set mode BEFORE resolving the twin (matches reference)
         state.cw = cw
         if env_id:
-            state.robot = cw.twin(twin_id=twin_uuid, environment_id=env_id)
+            state.robot = cw.twin(CYBERWAVE_ASSET, twin_id=twin_uuid, environment_id=env_id)
         else:
-            state.robot = cw.twin(twin_id=twin_uuid)
+            state.robot = cw.twin(CYBERWAVE_ASSET, twin_id=twin_uuid)
         state.robot_connected = True
-        print(f"[robot] Connected: {state.robot.uuid}  (affect={CYBERWAVE_AFFECT})")
+        print(f"[robot] Connected: {state.robot.uuid}  asset={CYBERWAVE_ASSET}  (affect={CYBERWAVE_AFFECT})")
     except Exception as e:
         print(f"[robot] Connection failed: {e}")
         state.robot_connected = False

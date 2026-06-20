@@ -46,6 +46,8 @@ class InterHumanClient:
         self.segment_seconds = max(3.5, segment_seconds)  # stay safely above the 3 s minimum
         self.fps = max(1.0, fps)
         self.running = True
+        # Concise per-event logging so you can watch the stream while testing.
+        self.debug = os.getenv("INTERHUMAN_DEBUG", "true").lower() in ("1", "true", "yes")
 
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
@@ -154,6 +156,8 @@ class InterHumanClient:
         data = payload.get("data", {}) or {}
         if msg_type == "engagement.updated":
             self.latest["engagement"] = data.get("state", "unknown")
+            if self.debug:
+                print(f"[interhuman] <- engagement: {self.latest['engagement']}")
         elif msg_type == "signal.detected":
             signals = data.get("signals", []) or []
             self.latest["signals"] = [
@@ -164,6 +168,9 @@ class InterHumanClient:
                 }
                 for s in signals
             ]
+            if self.debug and signals:
+                rendered = ", ".join(f"{s.get('type')}({s.get('probability')})" for s in signals)
+                print(f"[interhuman] <- signals: {rendered}")
         elif msg_type == "conversation_quality.updated":
             self.latest["quality"] = data.get("overall")
         elif msg_type == "error":
@@ -205,6 +212,10 @@ class InterHumanClient:
                 continue
             try:
                 await ws.send(data)
+                if self.debug:
+                    dur = len(frames) / self.fps
+                    print(f"[interhuman] -> segment sent ({len(frames)} frames, "
+                          f"~{dur:.1f}s, {len(data) // 1024} KB)")
             except Exception as e:  # noqa: BLE001
                 print(f"[interhuman] send failed: {e}")
                 return

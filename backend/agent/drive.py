@@ -119,6 +119,14 @@ class DriveExecutor:
         self.cw = cw
         self.affect = affect
         self.dry_run = dry_run
+        # Playground can't drive a wheeled base by velocity, so in simulation we
+        # move it by pushing its pose over MQTT (update_twin_position/rotation).
+        # Live mode uses the real locomotion commands. Same plan drives both.
+        self.sim_pose = affect.lower() in ("simulation", "sim")
+        self._x = 0.0
+        self._y = 0.0
+        self._yaw = 0.0  # radians
+        self._z = 0.0
 
     def _affect(self) -> None:
         if self.cw is None:
@@ -127,6 +135,22 @@ class DriveExecutor:
             self.cw.affect(self.affect)
         except Exception as e:  # noqa: BLE001
             print(f"[drive] cw.affect({self.affect!r}) failed: {e}")
+            return
+        # cw.affect() drops the MQTT client, and locomotion commands publish over
+        # MQTT. A publish to a disconnected client is silently dropped (the call
+        # still returns "ok"), so we must connect AND wait (connect is async).
+        try:
+            mqtt = self.cw.mqtt
+            if not getattr(mqtt, "connected", False):
+                mqtt.connect()
+                for _ in range(50):  # wait up to ~5 s for the broker handshake
+                    if getattr(mqtt, "connected", False):
+                        break
+                    time.sleep(0.1)
+            if not getattr(mqtt, "connected", False):
+                print("[drive] WARNING: MQTT not connected — commands may be dropped")
+        except Exception as e:  # noqa: BLE001
+            print(f"[drive] mqtt connect warning: {e}")
 
     def _run_one(self, a: Action) -> None:
         if a.type == "move_forward":
@@ -152,16 +176,19 @@ class DriveExecutor:
 
     def execute(self, actions: list[Action]) -> list[dict]:
         """Run actions in order. Blocking — call from a worker thread. Returns per-action results."""
-        results: list[dict] = []
-
         if not actions:
-            return results
+            return []
 
         if self.robot is None or self.dry_run:
             status = "dry_run" if self.dry_run else "no_robot"
             return [{"action": a.describe(), "status": status} for a in actions]
 
         self._affect()
+
+        if self.sim_pose:
+            return self._execute_sim_pose(actions)
+
+        results: list[dict] = []
         for a in actions:
             try:
                 self._run_one(a)
@@ -169,5 +196,44 @@ class DriveExecutor:
             except Exception as e:  # noqa: BLE001 - contain and stop
                 results.append({"action": a.describe(), "status": f"error: {e}"})
                 self.stop()
+                break
+        return results
+
+    def _push_pose(self) -> None:
+        uuid = self.robot.uuid
+        self.cw.mqtt.update_twin_position(uuid, {"x": self._x, "y": self._y, "z": self._z})
+        qz = math.sin(self._yaw / 2.0)
+        qw = math.cos(self._yaw / 2.0)
+        self.cw.mqtt.update_twin_rotation(uuid, {"x": 0.0, "y": 0.0, "z": qz, "w": qw})
+
+    def _execute_sim_pose(self, actions: list[Action]) -> list[dict]:
+        """Move the digital twin in Playground by integrating the plan into pose
+        updates pushed over MQTT (dead-reckoning: forward along heading; turn = yaw).
+        update_twin_position is the call that actually moves the base in Playground."""
+        results: list[dict] = []
+        for a in actions:
+            try:
+                if a.type in ("move_forward", "move_backward"):
+                    d = a.distance if a.type == "move_forward" else -a.distance
+                    steps = max(1, int(abs(d) / 0.05))  # ~5 cm substeps for smooth motion
+                    for _ in range(steps):
+                        self._x += (d / steps) * math.cos(self._yaw)
+                        self._y += (d / steps) * math.sin(self._yaw)
+                        self._push_pose()
+                        time.sleep(0.04)
+                elif a.type in ("turn_left", "turn_right"):
+                    ang = a.angle if a.type == "turn_left" else -a.angle
+                    steps = max(1, int(abs(ang) / 0.1))  # ~0.1 rad substeps
+                    for _ in range(steps):
+                        self._yaw += ang / steps
+                        self._push_pose()
+                        time.sleep(0.04)
+                elif a.type == "wait":
+                    time.sleep(a.duration)
+                elif a.type == "stop":
+                    self._push_pose()
+                results.append({"action": a.describe(), "status": "sim"})
+            except Exception as e:  # noqa: BLE001
+                results.append({"action": a.describe(), "status": f"error: {e}"})
                 break
         return results
