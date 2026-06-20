@@ -1,10 +1,11 @@
 """
 OpenAI vision planner
 =====================
-The "brain" of the rescue rover. Takes ONE camera frame plus a short summary of
-how any visible person seems to feel (from the InterHuman social-signal sensor)
-and returns a strict JSON object: whether someone looks injured, a one-line
-assessment, a sentence to speak, and a short, safe list of rover actions.
+The "brain" of the wake-up robot. Takes ONE camera frame plus a short summary of
+how the visible person seems to feel (from the InterHuman social-signal sensor)
+and returns a strict JSON object: whether the person looks asleep, a one-line
+assessment, how groggy they look, a short reaction report, a friendly wake-up
+line to speak, and a short, safe list of rover actions to approach them.
 
 Mirrors the proven Cyberwave "natural-language agent" pattern (camera + text ->
 VLM planner -> validated JSON plan), with OpenAI as the planner instead of Claude.
@@ -27,20 +28,24 @@ DEFAULT_MODEL = "gpt-4o"
 
 # The action vocabulary here is a 1:1 subset of the verbs the Cyberwave UGV
 # Beast already understands. We keep it to locomotion for a safe first version.
-SYSTEM_PROMPT = """You are the perception-and-planning brain of a small ground rescue rover (a Waveshare UGV Beast).
+SYSTEM_PROMPT = """You are the perception-and-planning brain of a small "wake-up" robot (a Waveshare UGV Beast).
 
-You receive ONE still frame from the rover's forward camera, plus a short note about how any visible person seems to feel (from a social-signal sensor). Your job has two parts:
+You receive ONE still frame from the robot's forward camera, plus a short note about how the visible person seems to feel (from a social-signal sensor). Your job has three parts:
 
-1. DETECT: decide whether a person in the frame appears INJURED or in need of help. Signs include: lying on the ground, slumped or collapsed, not moving normally, visibly distressed or in pain, bleeding, or trapped. A person standing/walking/sitting normally is NOT injured.
+1. DETECT: decide whether a person in the frame appears to be ASLEEP. Signs of sleep: eyes closed, lying down on a bed/couch/desk, head resting down or slumped, motionless, very relaxed posture. A person sitting up with eyes open, moving, looking around, or clearly active is AWAKE.
 
-2. PLAN: if someone looks injured, produce a SHORT, SAFE sequence of rover actions to approach calmly and reassure them. If no one looks injured, return an empty action list.
+2. PLAN: if the person looks asleep, produce a SHORT, SAFE sequence of robot actions to approach them gently so the robot is close enough to wake them. The spoken wake-up announcement is played separately by the system, so you only plan MOVEMENT here. If the person is awake or no person is visible, return an empty action list.
+
+3. REPORT: estimate how groggy/sleepy the person looks right now ("grogginess" 0..100, where 0 = wide awake and alert, 100 = deeply asleep) and write a short, friendly "reaction_summary" describing what you see — and, if the person appears to have just woken up, how they are reacting (e.g. groggy, startled, annoyed, cheerful). Take the social-signal note into account.
 
 You MUST reply with a single strict JSON object and NOTHING else (no markdown, no code fences, no text outside the JSON). The object MUST have exactly these keys:
 
 {
-  "injured": boolean,
-  "injured_count": integer,
+  "person_present": boolean,
+  "asleep": boolean,
+  "grogginess": integer,
   "assessment": string,
+  "reaction_summary": string,
   "say": string,
   "actions": [ ... ]
 }
@@ -54,12 +59,11 @@ Each entry in "actions" must be one of:
   {"type": "stop"}
 
 Rules:
-- If no injured person is visible: "injured" = false, "injured_count" = 0, "actions" = [], "say" = "".
-- Approach conservatively: small forward steps (<= 0.5 m each), gentle turns. ALWAYS end an approach with a "stop".
+- If no person is visible: "person_present" = false, "asleep" = false, "grogginess" = 0, "actions" = [], "say" = "", and say so in "assessment".
+- If the person is AWAKE: "asleep" = false, "actions" = [], "say" = "". Still set a (low) "grogginess" and describe how alert/expressive they look in "reaction_summary".
+- If the person is ASLEEP: "asleep" = true. Approach conservatively: small forward steps (<= 0.5 m each), gentle turns. ALWAYS end an approach with a "stop". "say" = ONE short, friendly wake-up line (e.g. "Good morning! Time to wake up!").
 - Never output more than 8 actions.
 - "assessment" is ONE short sentence describing what you see.
-- "say" is ONE short, calm sentence the rover speaks to the person (empty string if no one needs help).
-- If the person seems highly stressed or in pain, prioritise speaking a calm reassurance and approach slowly.
 - Output ONLY the JSON object."""
 
 
@@ -143,7 +147,8 @@ def plan(frame_b64_jpeg: str, feelings: dict | None, model: str | None = None) -
 
     model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
     user_text = (
-        "Analyse this rover camera frame for an injured person who may need help.\n"
+        "Analyse this robot camera frame. Decide whether the person is asleep and, "
+        "if so, plan a gentle approach so the robot can wake them.\n"
         f"Social-signal sensor note: {feelings_summary}\n"
         "Reply with the JSON object exactly as specified."
     )

@@ -1,8 +1,10 @@
 # RobotHelper
 
-AI-driven search-and-rescue rover that detects injured people, reads their emotional state, plans a safe approach, and streams everything to a live ops dashboard.
+![RobotHelper Logo](logo.png)
 
-Built around a **Waveshare UGV Beast** rover controlled via the **Cyberwave SDK**, with an **OpenAI vision model** as the planning brain and **InterHuman** as the emotional-signal sensor.
+AI-driven **wake-up robot**: it watches via camera, decides when a person is asleep, drives over to wake them, and then reports how groggy they look and how they reacted — streaming everything to a live dashboard.
+
+Built around a **Waveshare UGV Beast** rover controlled via the **Cyberwave SDK**, with an **OpenAI vision model** as the planning brain and **InterHuman** as the emotional-signal sensor. The spoken wake-up line plays through the browser / PC audio.
 
 ## Architecture
 
@@ -12,7 +14,7 @@ MacBook webcam / rover camera
         v
   +-----------+       +------------------+
   | InterHuman| ----> | OpenAI Vision    |
-  | (feelings)|       | (planner)        |
+  | (feelings)|       | (asleep? planner)|
   +-----------+       +------------------+
                              |
                       JSON action plan
@@ -37,11 +39,13 @@ MacBook webcam / rover camera
            |
     +------v--------------------+
     | Next.js dashboard         |
-    | - live video feed         |
-    | - search-zone map + pins  |
-    | - agent status / feelings |
-    | - news alerts             |
-    | - voice interaction       |
+    | - live camera feed        |
+    | - wake-up report:         |
+    |     phase + grogginess    |
+    |     emotional reaction    |
+    |     AI summary            |
+    | - daily news (ScrapeGraph)|
+    | - browser wake-up audio   |
     +---------------------------+
 ```
 
@@ -50,9 +54,9 @@ MacBook webcam / rover camera
 ```
 robothelper/
   backend/
-    server.py               # FastAPI WebSocket server — orchestrator loop
+    server.py               # FastAPI WebSocket server — orchestrator loop + phase machine
     agent/
-      planner.py            # OpenAI vision planner (injury detection + JSON action plan)
+      planner.py            # OpenAI vision planner (asleep? + wake-up plan + report)
       feelings.py           # InterHuman live-stream client (engagement + social signals)
       drive.py              # Action validation/clamping + Cyberwave UGV executor
       __init__.py
@@ -61,19 +65,17 @@ robothelper/
     .env                    # local config (git-ignored)
   robothelper/              # Next.js 16 dashboard (React 19, Tailwind 4)
     app/
-      page.tsx              # Main dashboard page
+      page.tsx              # Main page — camera feed + wake-up report
       layout.tsx
       globals.css
       components/
-        VideoFeed.tsx        # Live camera feed with detection overlay
-        SearchMap.tsx        # Leaflet map with grid cells + injury pins
-        AgentStatus.tsx      # AI agent status panel (feelings + plan)
-        NewsAlert.tsx        # Live wildfire news alerts (ScrapeGraph)
+        VideoFeed.tsx        # Live camera feed with asleep/awake overlay
+        WakeReport.tsx       # Phase + grogginess gauge + emotional reaction + AI summary
+        NewsFeed.tsx         # Daily news feed (ScrapeGraph), shown once you're awake
       hooks/
         useBackend.ts        # WebSocket hook — frames, detections, agent state
-        useCyberwave.ts      # MQTT hook — rover telemetry + SafeScout
+        useCyberwave.ts      # MQTT hook — rover telemetry (unused by the wake-up UI)
     lib/
-      searchZone.ts          # Search-zone geometry (Pacific Palisades grid)
       cyberwave.ts           # Cyberwave REST/MQTT/WebRTC helpers
     package.json
   cv_model/
@@ -138,31 +140,30 @@ Open [http://localhost:3000](http://localhost:3000). The dashboard connects to t
 
 ## How It Works
 
-### Detection Pipeline
+### Wake-Up Pipeline
 
 1. The camera loop grabs frames at ~7 fps from the webcam (or rover camera).
 2. Each frame is sent to the **OpenAI vision model** (default: `gpt-4o`) along with a summary of the person's emotional state from InterHuman.
-3. The model returns a strict JSON response: `injured` (bool), `assessment`, `say` (a spoken reassurance line), and an `actions` list.
+3. The model returns a strict JSON response: `person_present`, `asleep` (bool), `grogginess` (0–100), `assessment`, `reaction_summary`, `say` (a friendly wake-up line), and an `actions` list.
 4. The **safety layer** validates and clamps every action against conservative limits (max 1.0 m/step, max 3.14 rad/turn, max 8 actions per plan).
-5. Validated actions are executed via the **Cyberwave SDK** against the UGV Beast (digital twin or physical rover).
-6. Everything is streamed to the dashboard over WebSocket.
+5. If the person is asleep, validated approach actions run **once** via the **Cyberwave SDK** against the UGV Beast (digital twin or physical rover), and the browser speaks the wake-up line via TTS.
+6. A small phase machine moves through **scanning → waking → awake**; once awake, the dashboard reports grogginess + emotional reaction. Everything streams over WebSocket.
 
 ### InterHuman (Feelings Sensor)
 
-The InterHuman client continuously streams ~4-second video segments to the InterHuman API over a WebSocket. It receives back engagement level, social signals (stress, frustration, hesitation, etc.), and conversation quality. These signals are fed into the planner prompt to adjust the rover's behavior (e.g., high stress = approach slower, speak sooner).
+The InterHuman client continuously streams ~4-second video segments to the InterHuman API over a WebSocket. It receives back engagement level, social signals (stress, frustration, hesitation, etc.), and conversation quality. These signals are fed into the planner prompt and surfaced in the report as **how the person reacted to being woken up**.
 
 ### YOLOv8 Pre-Filter (Phase 2)
 
-Set `USE_YOLO=true` in `.env` to enable the local YOLOv8-pose + Gradient Boosting classifier as a fast pre-filter before calling OpenAI. This reduces API costs by only sending likely-injured frames to the vision model.
+Set `USE_YOLO=true` in `.env` to enable the local YOLOv8-pose + Gradient Boosting classifier as a fast pre-filter before calling OpenAI. This reduces API costs by only sending likely-relevant frames to the vision model.
 
 ### Dashboard Features
 
-- **Live video feed** with detection overlay (OK = green, INJURED = red)
-- **Search-zone map** (Leaflet) with a grid overlay, injury pins, and rover position tracking
-- **AI agent panel** showing the current emotional reading, injury assessment, planned actions, and execution status
-- **Voice interaction** — the rover can speak ("Do you need assistance?") and listen for a response via browser speech APIs
-- **News alerts** — live wildfire incident alerts pulled from CAL FIRE via ScrapeGraph
-- **Keyboard controls** — W/A/S/D or arrow keys to drive the rover manually
+- **Live camera feed** with an asleep/awake overlay (ASLEEP = violet, AWAKE = green)
+- **Wake-up report** with the current phase, a grogginess gauge (0–100), the InterHuman emotional reaction, and an AI natural-language summary
+- **Daily news feed** — once you're awake, a box pulls the day's news via **ScrapeGraph** (`NEWS_URL`, defaults to X / Reuters; point it at any outlet)
+- **Browser wake-up audio** — the friendly wake-up line plays through the laptop/PC speakers via smallest.ai TTS
+- **Keyboard controls** — W/A/S/D or arrow keys to nudge the rover manually
 
 ## Configuration
 
@@ -182,8 +183,10 @@ All configuration is done via environment variables in `backend/.env`:
 | `USE_YOLO` | `false` | Enable local YOLO pre-filter (Phase 2) |
 | `CAMERA_SOURCE` | `webcam` | `webcam` or `robot` |
 | `CAMERA_FPS` | `7` | Target frames per second |
-| `SMALLEST_API_KEY` | _(none)_ | Text-to-speech |
-| `SCRAPEGRAPH_API_KEY` | _(none)_ | Live news alerts |
+| `SMALLEST_API_KEY` | _(none)_ | Text-to-speech (wake-up line) |
+| `SCRAPEGRAPH_API_KEY` | _(none)_ | Daily news feed ([scrapegraphai.com](https://scrapegraphai.com/dashboard/settings)) |
+| `NEWS_URL` | `https://x.com/Reuters` | Page ScrapeGraph scrapes for news — any outlet or X account/feed |
+| `NEWS_STEALTH` | `true` | Anti-bot mode for JS-heavy sites like X (costs extra credits) |
 
 ### Safety Limits
 
@@ -200,15 +203,19 @@ Every external service is optional. The system starts and runs with zero API key
 
 | Missing key | Behavior |
 |-------------|----------|
-| `OPENAI_API_KEY` | Planner is "offline" — video still streams, no AI detection |
-| `INTERHUMAN_API_KEY` | Feelings sensor is "offline" — planner runs without emotional context |
-| `CYBERWAVE_API_KEY` | Robot is "offline" — agent plans but doesn't move; use keyboard to navigate |
-| `SMALLEST_API_KEY` | TTS is silent — voice hail button is a no-op |
-| `SCRAPEGRAPH_API_KEY` | News panel shows dummy wildfire alert |
+| `OPENAI_API_KEY` | Planner is "offline" — video still streams, no asleep/awake detection |
+| `INTERHUMAN_API_KEY` | Feelings sensor is "offline" — report runs without the emotional reaction |
+| `CYBERWAVE_API_KEY` | Robot is "offline" — agent plans the approach but doesn't move; use keyboard to nudge |
+| `SMALLEST_API_KEY` | TTS is silent — the wake-up line won't play through the PC audio |
+| `SCRAPEGRAPH_API_KEY` | News box shows a sample feed instead of live scraped news |
 
 ## CV Model (Standalone)
 
-The `cv_model/` directory contains a standalone injury detection pipeline that can run independently:
+> Legacy / optional. The wake-up flow uses the OpenAI vision planner for asleep/awake
+> detection. This local pose pipeline (lying-down vs upright) is kept as an optional
+> `USE_YOLO=true` pre-filter and a standalone demo.
+
+The `cv_model/` directory contains a standalone pose-classification pipeline that can run independently:
 
 ```bash
 cd cv_model
@@ -228,8 +235,8 @@ The pipeline uses YOLOv8-pose to extract 17 body keypoints per person, computes 
 
 ## Known Limitations
 
-- **InterHuman is video-only** — adding microphone audio would improve voice-based signals (stress/pain).
-- Map pins are placed based on rover position/heading, not bounding-box pixel coordinates.
+- **InterHuman is video-only** — adding microphone audio would improve voice-based signals (stress/annoyance after waking).
+- The wake-up line plays through the **browser/PC speakers**, not an on-board robot speaker.
 - Only locomotion verbs are used (`move_forward`, `move_backward`, `turn_left`, `turn_right`, `stop`). Camera-servo and lights are available on the UGV but not wired up yet.
 
 ## License

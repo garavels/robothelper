@@ -1,13 +1,14 @@
 """
 RobotHelper — Backend Server
 ============================
-FastAPI WebSocket server that drives the rescue pipeline:
+FastAPI WebSocket server that drives the wake-up pipeline:
 
     MacBook webcam (now) / rover camera (later)
-      -> OpenAI vision planner  (detect injured person + plan a move)
-      -> InterHuman live stream  (how does the person feel?)
+      -> OpenAI vision planner  (is the person asleep? + plan a gentle approach)
+      -> InterHuman live stream  (how do they feel / react to being woken?)
       -> safety-checked action plan -> Cyberwave SDK -> UGV Beast
       -> streamed to the Next.js dashboard over WebSocket
+      (the spoken wake-up line is played by the browser/PC via /api/tts)
 
 Detection is OpenAI-only by default; set USE_YOLO=true to re-enable the local
 YOLOv8-pose + classifier pre-filter (Phase 2). See PIPELINE.md for the design.
@@ -21,6 +22,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -73,19 +75,22 @@ class State:
         self.running = True
         self.use_mock = False
 
-        # Rescue agent
+        # Wake-up agent
         self.ih_client: "feelings.InterHumanClient | None" = None
         self.drive_exec: "drive.DriveExecutor | None" = None
         self.agent: dict = {
             "enabled": False,
-            "injured": False,
-            "injured_count": 0,
+            "phase": "scanning",    # scanning | waking | awake | monitoring | error
+            "status": "idle",       # idle | scanning | planning | acting | error
+            "person_present": False,
+            "asleep": False,
+            "grogginess": 0,        # 0 (wide awake) .. 100 (deeply asleep)
             "assessment": "",
+            "reaction_summary": "",
             "say": "",
             "feelings_summary": "",
             "actions": [],          # planned (validated/clamped) actions
             "executed": [],         # per-action execution results
-            "status": "idle",       # idle | scanning | planning | acting | error
             "error": None,
             "updated": 0.0,
         }
@@ -225,13 +230,13 @@ def _current_feelings() -> dict:
     return dict(state.feelings)
 
 
-def _synth_detections(injured_count: int) -> list[dict]:
-    """OpenAI-only mode has no bounding boxes; emit placeholder INJURED detections
-    so the existing map-pin / video-overlay logic keeps working."""
-    return [
-        {"bbox": [0, 0, 0, 0], "label": "INJURED", "confidence": 0.9}
-        for _ in range(max(0, injured_count))
-    ]
+def _synth_detection(person_present: bool, asleep: bool) -> list[dict]:
+    """OpenAI-only mode has no bounding boxes; emit a single placeholder detection
+    (ASLEEP / AWAKE) so the video-overlay logic keeps working."""
+    if not person_present:
+        return []
+    label = "ASLEEP" if asleep else "AWAKE"
+    return [{"bbox": [0, 0, 0, 0], "label": label, "confidence": 0.9}]
 
 
 async def planner_loop():
@@ -243,11 +248,15 @@ async def planner_loop():
             state.agent["status"] = "disabled"
         return
 
-    print(f"[agent] Planner active (model={os.getenv('OPENAI_MODEL', planner.DEFAULT_MODEL)}, "
+    print(f"[agent] Wake-up planner active (model={os.getenv('OPENAI_MODEL', planner.DEFAULT_MODEL)}, "
           f"interval={PLAN_INTERVAL}s, affect={CYBERWAVE_AFFECT}, dry_run={AGENT_DRY_RUN}).")
     with state.lock:
         state.agent["enabled"] = True
         state.agent["status"] = "scanning"
+        state.agent["phase"] = "scanning"
+
+    wake_issued = False    # have we already driven an approach for the current sleeper?
+    absent_cycles = 0      # consecutive cycles with no person (re-arms wake_issued)
 
     while state.running:
         await asyncio.sleep(PLAN_INTERVAL)
@@ -265,17 +274,30 @@ async def planner_loop():
         result = await asyncio.to_thread(planner.plan, frame_b64, feelings_now)
 
         if not result.get("ok"):
+            err = result.get("error") or "planner error"
+            is_rate = ("rate_limit" in err) or ("429" in err)
             with state.lock:
                 state.agent["status"] = "error"
-                state.agent["error"] = result.get("error")
+                state.agent["phase"] = "rate_limited" if is_rate else "error"
+                state.agent["error"] = (
+                    "OpenAI rate limit — add billing (or raise AGENT_PLAN_INTERVAL) to speed up"
+                    if is_rate else err
+                )
                 state.agent["feelings_summary"] = result.get("feelings_summary", "")
-            print(f"[agent] plan error: {result.get('error')}")
+            print(f"[agent] plan error: {err}")
+            if is_rate:
+                # Free OpenAI tier is tiny (e.g. 3 req/min AND 50 req/day on
+                # gpt-4o). Honor the suggested retry delay ("28m48s" / "20s") so
+                # we stop hammering; otherwise back off ~20s.
+                await asyncio.sleep(_retry_after_seconds(err))
             continue
 
         plan_obj = result.get("plan", {}) or {}
-        injured = bool(plan_obj.get("injured", False))
-        injured_count = int(plan_obj.get("injured_count", 0) or 0)
+        person_present = bool(plan_obj.get("person_present", False))
+        asleep = bool(plan_obj.get("asleep", False))
+        grogginess = max(0, min(100, int(plan_obj.get("grogginess", 0) or 0)))
         assessment = str(plan_obj.get("assessment", ""))
+        reaction_summary = str(plan_obj.get("reaction_summary", ""))
         say = str(plan_obj.get("say", ""))
 
         actions, errors = drive.validate_and_clamp(plan_obj.get("actions"))
@@ -283,32 +305,58 @@ async def planner_loop():
         status = "scanning"
 
         if errors:
+            phase = "error"
             status = "error"
             print(f"[agent] plan rejected by safety validator: {errors}")
-        elif injured and actions and state.drive_exec is not None:
-            status = "acting"
-            with state.lock:
-                state.agent["status"] = status
-                state.agent["actions"] = [a.to_dict() for a in actions]
-            executed = await asyncio.to_thread(state.drive_exec.execute, actions)
-            status = "scanning"
+        elif not person_present:
+            absent_cycles += 1
+            if absent_cycles >= 2:
+                wake_issued = False    # re-arm so the next sleeper can be woken
+            phase = "scanning"
+            say = ""
+        else:
+            absent_cycles = 0
+            if asleep:
+                phase = "waking"
+                if not say:
+                    say = "Good morning! Time to wake up!"
+                # Approach ONCE per sleeper (per demo choice); the frontend repeats
+                # the spoken wake-up line on a cooldown while they stay asleep.
+                if not wake_issued and actions and state.drive_exec is not None:
+                    status = "acting"
+                    with state.lock:
+                        state.agent["status"] = status
+                        state.agent["phase"] = phase
+                        state.agent["actions"] = [a.to_dict() for a in actions]
+                    executed = await asyncio.to_thread(state.drive_exec.execute, actions)
+                    wake_issued = True
+                    status = "scanning"
+            elif wake_issued:
+                phase = "awake"        # they woke after we nudged -> reaction report
+                say = ""
+            else:
+                phase = "monitoring"   # already awake on arrival; nothing to do
+                say = ""
 
         with state.lock:
             state.agent.update({
-                "injured": injured,
-                "injured_count": injured_count,
+                "phase": phase,
+                "status": status,
+                "person_present": person_present,
+                "asleep": asleep,
+                "grogginess": grogginess,
                 "assessment": assessment,
+                "reaction_summary": reaction_summary,
                 "say": say,
                 "feelings_summary": result.get("feelings_summary", ""),
                 "actions": [a.to_dict() for a in (actions or [])],
                 "executed": executed,
-                "status": status,
                 "error": "; ".join(errors) if errors else None,
                 "updated": time.time(),
             })
-            # Drive the map / video overlay (only meaningful in OpenAI-only mode).
+            # Drive the video overlay (only meaningful in OpenAI-only mode).
             if not USE_YOLO:
-                state.detections = _synth_detections(injured_count if injured else 0)
+                state.detections = _synth_detection(person_present, asleep)
 
 
 async def broadcaster():
@@ -380,82 +428,169 @@ app.add_middleware(
 
 SMALLEST_TTS_URL = "https://api.smallest.ai/waves/v1/lightning-v2/get_speech"
 
+# ── Daily news feed (ScrapeGraph) ─────────────────────────────────────
+# Once the person is awake, the dashboard pulls a short news feed via the
+# official ScrapeGraphAI v2 Extract API (https://scrapegraphai.com).
+#
+# Notes learned the hard way:
+#  - v2 keys (sgai-...) only work on the v2 host (v2-api.scrapegraphai.com);
+#    the legacy v1 host (api.scrapegraphai.com/v1) returns 403 for them.
+#  - `stealth` is a paid-plan fetch provider. On the Free Plan it returns
+#    HTTP 400 ("no fetch provider matches"), so we retry without it.
+#  - X (twitter) needs JS to show fresh posts, but JS-render of x.com is
+#    rejected on the Free Plan, and the no-JS fallback returns a STALE cached
+#    page. So the default points at a JS-friendly lite news site that returns
+#    today's headlines. Set NEWS_URL=https://x.com/<account> if you upgrade.
+SCRAPEGRAPH_EXTRACT_URL = os.getenv(
+    "SCRAPEGRAPH_API_URL", "https://v2-api.scrapegraphai.com/api/extract"
+)
+NEWS_URL = os.getenv("NEWS_URL", "https://lite.cnn.com")
+NEWS_PROMPT = os.getenv(
+    "NEWS_PROMPT",
+    "Extract the latest news from this page as up to 8 of the most recent "
+    "items. For each item give a 'title' (the headline or post text), a "
+    "'source' (the outlet, site, or account handle), and a 'summary' (one "
+    "short sentence, or empty).",
+)
+NEWS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "source": {"type": "string"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["title"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+# Anti-bot mode helps on JS-heavy sites like X but costs +5 credits/call.
+# Defaults ON because the default NEWS_URL is X (which gates hard without it).
+NEWS_STEALTH = os.getenv("NEWS_STEALTH", "true").lower() in ("1", "true", "yes")
+
+# Shown when no key is set or scraping fails, so the box never looks broken.
 DUMMY_NEWS = {
-    "headline": "Wildfire intensifies in Temescal Canyon — deploy more search robots recommended",
-    "summary": (
-        "Authorities report the Temescal Canyon wildfire has grown by 800 acres "
-        "overnight. Evacuation orders expanded to zones B-7 through B-12. "
-        "Search-and-rescue teams are urged to deploy additional robotic units "
-        "to cover the widening perimeter."
-    ),
-    "severity": "critical",
-    "source": "default",
-    "search_zone_expanded": True,
+    "items": [
+        {"title": "Markets open higher as tech shares lead early gains",
+         "source": "Sample Wire", "summary": "Indices rose at the open, led by semiconductors."},
+        {"title": "City rolls out new weekend transit routes",
+         "source": "Sample Wire", "summary": "Service expands to three more neighborhoods."},
+        {"title": "Researchers report progress on battery recycling",
+         "source": "Sample Wire", "summary": "A new process recovers most lithium from spent cells."},
+        {"title": "Forecast: clear skies through the weekend",
+         "source": "Sample Wire", "summary": "Mild temperatures and low humidity expected."},
+    ],
+    "fetched_via": "fallback",
+    "source_url": "",
 }
 
 
-SGAI_BASE_URL = "https://sgai-api-v2.onrender.com"
+def _extract_news_items(result) -> list[dict]:
+    """Pull a clean list of {title, source, summary} out of whatever shape the
+    model returned (a bare list, or a dict keyed by items/news/headlines/...)."""
+    if isinstance(result, list):
+        raw = result
+    elif isinstance(result, dict):
+        raw = (
+            result.get("items") or result.get("news") or result.get("headlines")
+            or result.get("articles") or result.get("posts")
+            or result.get("tweets") or []
+        )
+        if not raw and (result.get("title") or result.get("headline")):
+            raw = [result]
+    else:
+        raw = []
+
+    items: list[dict] = []
+    for it in raw:
+        if isinstance(it, str):
+            if it.strip():
+                items.append({"title": it.strip(), "source": "", "summary": ""})
+        elif isinstance(it, dict):
+            title = it.get("title") or it.get("headline") or it.get("text") or ""
+            if not title:
+                continue
+            items.append({
+                "title": str(title).strip(),
+                "source": str(it.get("source") or it.get("outlet")
+                              or it.get("author") or it.get("handle") or "").strip(),
+                "summary": str(it.get("summary") or it.get("description") or "").strip(),
+            })
+    return items
 
 
 @app.get("/api/news")
 async def news_endpoint():
+    """Today's news feed via the ScrapeGraph v2 Extract API (scrapes NEWS_URL).
+
+    Tries fetch configs in order and uses the first that returns items:
+      stealth+JS (if NEWS_STEALTH) -> JS render -> provider default.
+    A failed attempt (e.g. stealth on the Free Plan -> 400) isn't charged, so
+    the fallback is cheap and keeps the box working across plans/sites.
+    """
     api_key = os.getenv("SCRAPEGRAPH_API_KEY", "")
     if not api_key:
-        print("[news] No SCRAPEGRAPH_API_KEY — returning dummy data")
+        print("[news] No SCRAPEGRAPH_API_KEY — returning fallback news")
         return DUMMY_NEWS
+
+    headers = {
+        "SGAI-APIKEY": api_key.strip(),
+        "Content-Type": "application/json",
+        "accept": "application/json",
+    }
+    fetch_configs: list[dict | None] = []
+    if NEWS_STEALTH:
+        fetch_configs.append({"mode": "js", "stealth": True, "wait": 3000})
+    fetch_configs.append({"mode": "js", "wait": 3000})
+    fetch_configs.append(None)  # let ScrapeGraph pick the provider
 
     try:
         import httpx
 
-        headers = {
-            "SGAI-APIKEY": api_key,
-            "Content-Type": "application/json",
-        }
+        last_err = "no successful attempt"
+        async with httpx.AsyncClient(timeout=90) as client:
+            for fc in fetch_configs:
+                payload: dict = {"url": NEWS_URL, "prompt": NEWS_PROMPT, "schema": NEWS_SCHEMA}
+                if fc is not None:
+                    payload["fetchConfig"] = fc
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{SGAI_BASE_URL}/api/v1/extract",
-                headers=headers,
-                json={
-                    "url": "https://www.fire.ca.gov/incidents",
-                    "prompt": (
-                        "Extract the most recent and urgent wildfire incident. "
-                        "Return the headline, a 1-2 sentence summary, and "
-                        "severity (critical, high, moderate, or low)."
-                    ),
-                    "schema": {
-                        "headline": "string",
-                        "summary": "string",
-                        "severity": "string",
-                    },
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+                resp = await client.post(SCRAPEGRAPH_EXTRACT_URL, headers=headers, json=payload)
+                if resp.status_code != 200:
+                    last_err = f"HTTP {resp.status_code}: {resp.text[:140]}"
+                    print(f"[news] attempt fetchConfig={fc} -> {last_err}")
+                    continue
 
-        result = data.get("json") or data.get("result") or {}
-        if isinstance(result, str):
-            result = json.loads(result)
+                data = resp.json()
+                # v2 Extract returns the structured data under "json".
+                result = data.get("json") or data.get("result") or data.get("data") or {}
+                if isinstance(result, str):
+                    try:
+                        result = json.loads(result)
+                    except Exception:  # noqa: BLE001
+                        result = {"items": [{"title": result}]}
 
-        if result and result.get("headline"):
-            return {
-                "headline": result["headline"],
-                "summary": result.get("summary", DUMMY_NEWS["summary"]),
-                "severity": result.get("severity", "high"),
-                "source": "scrapegraph",
-                "search_zone_expanded": True,
-            }
+                items = _extract_news_items(result)
+                if items:
+                    return {"items": items[:8], "fetched_via": "scrapegraph", "source_url": NEWS_URL}
+                last_err = "200 but no items"
+                print(f"[news] attempt fetchConfig={fc} -> {last_err}")
 
-        print("[news] ScrapeGraph extract returned empty — using dummy data")
+        print(f"[news] all attempts failed ({last_err}) — using fallback")
         return DUMMY_NEWS
 
-    except Exception as e:
-        print(f"[news] ScrapeGraph error: {e} — returning dummy data")
+    except Exception as e:  # noqa: BLE001
+        print(f"[news] ScrapeGraph error: {e} — returning fallback")
         return DUMMY_NEWS
 
 
 class TTSRequest(BaseModel):
-    text: str = "Do you need assistance?"
+    text: str = "Good morning! Time to wake up!"
     voice_id: str = "alice"
 
 

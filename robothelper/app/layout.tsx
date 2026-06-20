@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RobotHelper | Search & Rescue",
-  description: "Autonomous robot dog search and rescue operations platform",
+  title: "RobotHelper | Wake-Up Bot",
+  description: "A robot that detects when you're asleep and wakes you up, then reports how you reacted",
 };
 
 export default function RootLayout({

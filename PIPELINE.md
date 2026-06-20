@@ -1,8 +1,16 @@
 # RobotHelper — Pipeline & Architecture Guide
 
-A plain-English guide to **how this project works today** and **how the new
-"AI-driven injured-person rescue" pipeline will work**. Written to be readable
+A plain-English guide to **how this project works**. Written to be readable
 without a technical background.
+
+> **Scope note (current):** RobotHelper is now a **wake-up robot**. The OpenAI
+> vision planner decides whether a person is **asleep**; if so the rover drives
+> over to **wake them up** (the wake-up line plays through the PC/browser audio),
+> and the dashboard reports how groggy they look and how they **reacted** (via
+> InterHuman). The pipeline below was originally written for an "injured-person
+> rescue" demo — the plumbing (camera → OpenAI planner → InterHuman → safety →
+> Cyberwave → dashboard) is identical; only the *question the brain asks*
+> ("injured?" → "asleep?") and the dashboard (map/pins → camera + report) changed.
 
 > Tip: view this file in a Markdown preview (VS Code, GitHub, etc.) so the
 > mermaid diagrams render as pictures instead of code.
@@ -98,12 +106,12 @@ sensor — not starting from scratch.**
 ```mermaid
 flowchart LR
     A["Camera<br/>(MacBook now, rover later)"] --> B["AI brain<br/>(OpenAI vision model)"]
-    B --> C{"Injured<br/>person?"}
+    B --> C{"Person<br/>asleep?"}
     C -->|No| A
-    C -->|Yes| D["InterHuman API<br/>How does the person feel?"]
-    D --> E["AI plans the next move"]
-    E --> F["Robot acts<br/>(Cyberwave -> UGV Beast)"]
-    F --> G["Web dashboard<br/>you monitor everything"]
+    C -->|Yes| E["AI plans a gentle approach"]
+    E --> F["Robot drives over<br/>(Cyberwave -> UGV Beast)<br/>+ PC speaks wake-up line"]
+    F --> D["InterHuman API<br/>How did they react?"]
+    D --> G["Web dashboard<br/>camera + wake-up report"]
     F --> A
 ```
 

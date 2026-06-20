@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 
 export interface CVDetection {
   bbox: [number, number, number, number];
-  label: "OK" | "INJURED";
+  label: "ASLEEP" | "AWAKE";
   confidence: number;
 }
 
@@ -37,14 +37,17 @@ export interface ExecutedAction {
 
 export interface AgentState {
   enabled: boolean;
-  injured: boolean;
-  injured_count: number;
+  phase: string;
+  status: string;
+  person_present: boolean;
+  asleep: boolean;
+  grogginess: number;
   assessment: string;
+  reaction_summary: string;
   say: string;
   feelings_summary: string;
   actions: PlannedAction[];
   executed: ExecutedAction[];
-  status: string;
   error: string | null;
   updated: number;
 }
@@ -59,14 +62,17 @@ const DEFAULT_FEELINGS: FeelingsState = {
 
 const DEFAULT_AGENT: AgentState = {
   enabled: false,
-  injured: false,
-  injured_count: 0,
+  phase: "scanning",
+  status: "idle",
+  person_present: false,
+  asleep: false,
+  grogginess: 0,
   assessment: "",
+  reaction_summary: "",
   say: "",
   feelings_summary: "",
   actions: [],
   executed: [],
-  status: "idle",
   error: null,
   updated: 0,
 };

@@ -10,14 +10,15 @@ in the browser BEFORE running, so you can watch the twin move.
 Run from the backend/ folder (uses backend/.env):
 
     python sim_test.py move        # drive a visible square — raw movement test
-    python sim_test.py injured     # deterministic "injured detected" -> approach plan
+    python sim_test.py asleep      # deterministic "asleep detected" -> approach plan
     python sim_test.py plan        # REAL trigger: webcam frame -> OpenAI -> execute
 
 Notes:
 - Stop server.py first (two SDK sessions on one twin will fight).
-- `injured` needs no camera and no OpenAI key — pure movement-trigger test.
-- `plan` is the real activity trigger: hold an "injured" pose (e.g. lie down /
-  show a photo of a person on the ground) in front of the webcam, then run it.
+- `asleep` needs no camera and no OpenAI key — pure movement-trigger test.
+- `plan` is the real activity trigger: hold a "sleeping" pose (e.g. eyes closed /
+  head down / lie down, or show a photo of a sleeping person) in front of the
+  webcam, then run it.
 """
 
 import argparse
@@ -91,16 +92,16 @@ def cmd_move():
     run_plan("move", raw)
 
 
-def cmd_injured():
-    """Deterministic rescue trigger: pretend we detected an injured person and approach."""
-    print("Simulated activity: INJURED person detected front-left, appears in distress.")
+def cmd_asleep():
+    """Deterministic wake-up trigger: pretend we detected a sleeper and approach."""
+    print("Simulated activity: ASLEEP person detected front-left — driving over to wake them.")
     raw = [
         {"type": "move_forward", "distance": 0.5},
         {"type": "turn_left", "angle": 0.4},
         {"type": "move_forward", "distance": 0.3},
         {"type": "stop"},
     ]
-    run_plan("injured", raw)
+    run_plan("asleep", raw)
 
 
 def cmd_plan():
@@ -135,14 +136,16 @@ def cmd_plan():
         print(f"planner error: {result.get('error')}")
         return
     p = result["plan"]
-    print(f"  injured      : {p.get('injured')}  (count={p.get('injured_count')})")
+    print(f"  person       : {p.get('person_present')}")
+    print(f"  asleep       : {p.get('asleep')}  (grogginess={p.get('grogginess')})")
     print(f"  assessment   : {p.get('assessment')}")
+    print(f"  reaction     : {p.get('reaction_summary')}")
     print(f"  say          : {p.get('say')}")
     print(f"  raw actions  : {p.get('actions')}")
 
-    if not p.get("injured"):
-        print("\nNo injured person detected -> rover stays put (this is correct).")
-        print("Tip: lie down / show a photo of someone on the ground, then re-run.")
+    if not p.get("asleep"):
+        print("\nNo sleeping person detected -> rover stays put (this is correct).")
+        print("Tip: close your eyes / put your head down, or show a photo of someone asleep, then re-run.")
         return
     run_plan("plan", p.get("actions") or [])
 
@@ -239,14 +242,14 @@ def main():
     parser = argparse.ArgumentParser(description="UGV Beast simulation tester")
     parser.add_argument(
         "mode",
-        choices=["move", "injured", "plan", "teleport", "nav", "joints", "mqttpos"],
+        choices=["move", "asleep", "plan", "teleport", "nav", "joints", "mqttpos"],
         nargs="?",
         default="move",
     )
     args = parser.parse_args()
     {
         "move": cmd_move,
-        "injured": cmd_injured,
+        "asleep": cmd_asleep,
         "plan": cmd_plan,
         "teleport": cmd_teleport,
         "nav": cmd_nav,
