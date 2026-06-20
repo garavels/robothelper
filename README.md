@@ -1,6 +1,6 @@
 # RobotHelper
 
-<img src="logo.png" alt="RobotHelper Logo" width="120" height="120">
+<img src="logo.png" alt="RobotHelper Logo" width="1080" height="1080">
 
 AI-driven **wake-up robot**: it watches via camera, decides when a person is asleep, drives over to wake them, and then reports how groggy they look and how they reacted — streaming everything to a live dashboard.
 
@@ -172,7 +172,7 @@ All configuration is done via environment variables in `backend/.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | _(none)_ | Required for the AI planner |
-| `OPENAI_MODEL` | `gpt-4o` | OpenAI model to use |
+| `OPENAI_MODEL` | `gpt-4o` | OpenAI model (vision). On the free tier try `gpt-4o-mini` for more headroom |
 | `AGENT_PLAN_INTERVAL` | `4.0` | Seconds between planner calls |
 | `AGENT_DRY_RUN` | `false` | Plan without sending movement commands |
 | `CYBERWAVE_API_KEY` | _(none)_ | Robot connection |
@@ -185,8 +185,8 @@ All configuration is done via environment variables in `backend/.env`:
 | `CAMERA_FPS` | `7` | Target frames per second |
 | `SMALLEST_API_KEY` | _(none)_ | Text-to-speech (wake-up line) |
 | `SCRAPEGRAPH_API_KEY` | _(none)_ | Daily news feed ([scrapegraphai.com](https://scrapegraphai.com/dashboard/settings)) |
-| `NEWS_URL` | `https://x.com/Reuters` | Page ScrapeGraph scrapes for news — any outlet or X account/feed |
-| `NEWS_STEALTH` | `true` | Anti-bot mode for JS-heavy sites like X (costs extra credits) |
+| `NEWS_URL` | `https://lite.cnn.com` | Page ScrapeGraph scrapes for news. JS-friendly news sites work best; X needs a paid plan (see note) |
+| `NEWS_STEALTH` | `true` | Try anti-bot fetch first (+5 credits); auto-falls back to plain JS render if unavailable |
 
 ### Safety Limits
 
@@ -208,6 +208,11 @@ Every external service is optional. The system starts and runs with zero API key
 | `CYBERWAVE_API_KEY` | Robot is "offline" — agent plans the approach but doesn't move; use keyboard to nudge |
 | `SMALLEST_API_KEY` | TTS is silent — the wake-up line won't play through the PC audio |
 | `SCRAPEGRAPH_API_KEY` | News box shows a sample feed instead of live scraped news |
+
+### API & rate-limit notes (read before a live demo)
+
+- **OpenAI free tier is too small for continuous vision.** Without a payment method, `gpt-4o` is limited to ~**3 requests/min and ~50 requests/day** — a few minutes of running exhausts the day. Fixes: add a payment method at [platform.openai.com/billing](https://platform.openai.com/account/billing) (tier-1 → 500 RPM), and/or set `OPENAI_MODEL=gpt-4o-mini` and raise `AGENT_PLAN_INTERVAL`. When throttled, the planner **backs off automatically** and the report shows a `rate-limited` banner instead of erroring.
+- **ScrapeGraph keys are v2.** `sgai-…` keys only work on `v2-api.scrapegraphai.com` (the legacy `api.scrapegraphai.com/v1` host returns 403). `stealth` is a paid-plan fetch provider; `X` needs JS render + stealth for fresh posts, so the default `NEWS_URL` is a JS-friendly news site that returns today's headlines on the free plan.
 
 ## CV Model (Standalone)
 
