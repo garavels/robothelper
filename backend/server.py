@@ -239,6 +239,16 @@ def _synth_detection(person_present: bool, asleep: bool) -> list[dict]:
     return [{"bbox": [0, 0, 0, 0], "label": label, "confidence": 0.9}]
 
 
+def _retry_after_seconds(err: str, default: float = 20.0) -> float:
+    """Parse OpenAI's 'try again in 28m48s' / 'try again in 20s' hint to seconds."""
+    m = re.search(r"try again in\s+(?:(\d+)m)?\s*([\d.]+)\s*s", err)
+    if not m:
+        return default
+    minutes = float(m.group(1) or 0)
+    seconds = float(m.group(2) or 0)
+    return minutes * 60.0 + seconds + 2.0
+
+
 async def planner_loop():
     """Periodically: latest frame + feelings -> OpenAI plan -> safety -> rover."""
     if not os.getenv("OPENAI_API_KEY", ""):
