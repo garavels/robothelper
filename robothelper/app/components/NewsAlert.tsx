@@ -15,11 +15,11 @@ const BACKEND_URL =
 
 const SEVERITY_STYLES: Record<string, string> = {
   critical:
-    "border-red-500/60 bg-red-950/80 text-red-100",
-  high: "border-orange-500/60 bg-orange-950/80 text-orange-100",
+    "border-red-500/25 bg-red-500/8 text-red-100",
+  high: "border-orange-500/25 bg-orange-500/8 text-orange-100",
   moderate:
-    "border-amber-500/60 bg-amber-950/80 text-amber-100",
-  low: "border-blue-500/60 bg-blue-950/80 text-blue-100",
+    "border-amber-500/25 bg-amber-500/8 text-amber-100",
+  low: "border-blue-500/25 bg-blue-500/8 text-blue-100",
 };
 
 const SEVERITY_ACCENT: Record<string, string> = {
@@ -69,37 +69,37 @@ export default function NewsAlert() {
 
   return (
     <div
-      className={`relative border rounded-lg backdrop-blur-sm overflow-hidden transition-all duration-500 ${style}`}
+      className={`relative border rounded-2xl overflow-hidden transition-all duration-500 ${style}`}
     >
       {/* Animated urgency bar */}
-      <div className="absolute inset-x-0 top-0 h-0.5 overflow-hidden">
+      <div className="absolute inset-x-0 top-0 h-px overflow-hidden">
         <div
-          className="h-full w-1/3 bg-gradient-to-r from-transparent via-white/60 to-transparent"
+          className="h-full w-1/3 bg-gradient-to-r from-transparent via-white/40 to-transparent"
           style={{ animation: "newsSlide 2s linear infinite" }}
         />
       </div>
 
-      <div className="px-4 py-3 space-y-1.5">
+      <div className="px-4 py-3 space-y-2">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-bold uppercase tracking-widest ${accent}`}>
-              {news.severity === "critical" ? "⚠ CRITICAL ALERT" : "⚠ NEWS ALERT"}
+            <span className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${accent}`}>
+              {news.severity === "critical" ? "Critical Alert" : "News Alert"}
             </span>
             {news.source === "scrapegraph" && (
-              <span className="text-[8px] text-foreground/30 uppercase">
-                LIVE
+              <span className="px-1.5 py-0.5 rounded-full bg-white/[0.06] text-[9px] text-zinc-400 uppercase font-medium">
+                Live
               </span>
             )}
           </div>
           <button
             onClick={() => setDismissed(true)}
-            className="text-foreground/40 hover:text-foreground text-xs shrink-0 cursor-pointer leading-none"
+            className="text-zinc-500 hover:text-zinc-300 text-sm shrink-0 cursor-pointer leading-none transition-colors"
           >
-            ✕
+            &times;
           </button>
         </div>
 
-        <div className="text-xs font-bold leading-snug">
+        <div className="text-xs font-semibold leading-snug">
           {news.headline}
         </div>
         <div className="text-[11px] leading-relaxed opacity-80">
@@ -107,11 +107,12 @@ export default function NewsAlert() {
         </div>
 
         {news.search_zone_expanded && (
-          <div className="flex items-center gap-2 pt-1">
+          <div className="flex items-center gap-2 pt-0.5">
             <span
               className={`inline-block w-1.5 h-1.5 rounded-full ${
-                expanding ? "bg-amber-400 animate-pulse" : "bg-amber-400/40"
+                expanding ? "bg-amber-400" : "bg-amber-400/40"
               }`}
+              style={expanding ? { animation: "dot-pulse 1.5s ease-in-out infinite" } : undefined}
             />
             <span className="text-[10px] text-amber-300/90 uppercase tracking-wider font-medium">
               {expanding
@@ -121,17 +122,6 @@ export default function NewsAlert() {
           </div>
         )}
       </div>
-
-      <style jsx>{`
-        @keyframes newsSlide {
-          0% {
-            transform: translateX(-100%);
-          }
-          100% {
-            transform: translateX(400%);
-          }
-        }
-      `}</style>
     </div>
   );
 }
