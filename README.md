@@ -2,7 +2,7 @@
 
 
 <div align="center">
-  <img src="logo.png" alt="RobotHelper Logo" width="540" height="540">
+  <img src="logo-new.png" alt="RobotHelper Logo" width="540" height="540">
 </div>
 
 AI-driven **wake-up robot**: it watches via camera, decides when a person is asleep, drives over to wake them, and then reports how groggy they look and how they reacted — streaming everything to a live dashboard.
