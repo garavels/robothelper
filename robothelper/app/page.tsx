@@ -14,6 +14,7 @@ export default function Home() {
   const [cameraOn, setCameraOn] = useState(true);
   const [showNews, setShowNews] = useState(false);
   const [selectedVoice, setSelectedVoice] = useState("alloy");
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
 
   const backend = useBackend();
   const { telemetry, mqttConnected } = useCyberwave();
@@ -47,6 +48,55 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [backend.feelings.connected, backend.feelings.error]);
 
+  // --- Audio unlock function ---
+  const unlockAudio = useCallback(async () => {
+    if (!audioUnlocked) {
+      try {
+        // Initialize audio context to unlock audio playback
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+        console.log('[Audio] Audio context unlocked, state:', audioContext.state);
+        setAudioUnlocked(true);
+      } catch (err) {
+        console.error('[Audio] Failed to unlock audio context:', err);
+      }
+    }
+  }, [audioUnlocked]);
+
+  // --- Audio unlock on user interaction ---
+  useEffect(() => {
+    const handleUserInteraction = async () => {
+      await unlockAudio();
+    };
+
+    // Add event listeners for common user interactions
+    document.addEventListener('click', handleUserInteraction);
+    document.addEventListener('keydown', handleUserInteraction);
+    document.addEventListener('touchstart', handleUserInteraction);
+    document.addEventListener('mousedown', handleUserInteraction);
+
+    return () => {
+      document.removeEventListener('click', handleUserInteraction);
+      document.removeEventListener('keydown', handleUserInteraction);
+      document.removeEventListener('touchstart', handleUserInteraction);
+      document.removeEventListener('mousedown', handleUserInteraction);
+    };
+  }, [unlockAudio]);
+
+  // --- Initial audio unlock attempt on mount ---
+  useEffect(() => {
+    const attemptInitialUnlock = async () => {
+      try {
+        await unlockAudio();
+      } catch (err) {
+        console.log('[Audio] Initial unlock attempt failed (expected if no user interaction yet)');
+      }
+    };
+    attemptInitialUnlock();
+  }, [unlockAudio]);
+
   const lastAgentSpeakRef = useRef<{ text: string; at: number }>({
     text: "",
     at: 0,
@@ -55,6 +105,14 @@ export default function Home() {
   // --- TTS for wake-up voice ---
   const playTTS = useCallback(async (text: string) => {
     console.log('[TTS] Attempting to speak:', text);
+    
+    // Ensure audio is unlocked before playing
+    if (!audioUnlocked) {
+      console.log('[TTS] Audio not unlocked, attempting to unlock...');
+      await unlockAudio();
+      // Give audio context a moment to initialize
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     
     // Try API first for high-quality voice
     try {
@@ -73,22 +131,36 @@ export default function Home() {
         const blob = await resp.blob();
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
+        
+        // Set audio attributes for better compatibility
+        audio.crossOrigin = "anonymous";
+        
         await new Promise<void>((resolve) => {
+          const cleanup = () => {
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          
           audio.onended = () => {
             console.log('[TTS] API TTS completed');
-            URL.revokeObjectURL(url);
-            resolve();
+            cleanup();
           };
-          audio.onerror = () => {
-            console.error('[TTS] API TTS playback error');
-            URL.revokeObjectURL(url);
-            resolve();
+          audio.onerror = (e) => {
+            console.error('[TTS] API TTS playback error:', e);
+            console.log('[TTS] Falling back to browser TTS due to playback error');
+            cleanup();
           };
-          audio.play().catch(() => {
-            console.error('[TTS] API TTS play failed');
-            URL.revokeObjectURL(url);
-            resolve();
-          });
+          
+          const playPromise = audio.play();
+          if (playPromise !== undefined) {
+            playPromise.then(() => {
+              console.log('[TTS] API TTS playback started successfully');
+            }).catch(err => {
+              console.error('[TTS] API TTS play failed:', err);
+              console.log('[TTS] This might be due to browser autoplay policy. Falling back to browser TTS.');
+              cleanup();
+            });
+          }
         });
         return;
       } else {
@@ -99,9 +171,10 @@ export default function Home() {
     }
 
     // Fallback to browser TTS if API fails
+    console.log('[TTS] Falling back to browser speech synthesis');
     if ('speechSynthesis' in window) {
       try {
-        console.log('[TTS] Falling back to browser speech synthesis');
+        console.log('[TTS] Using browser speech synthesis');
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = 1.0;
         utterance.pitch = 1.0;
@@ -111,6 +184,8 @@ export default function Home() {
         utterance.onend = () => console.log('[TTS] Browser TTS finished');
         utterance.onerror = (e) => console.error('[TTS] Browser TTS error:', e);
         
+        // Cancel any ongoing speech to avoid overlapping
+        speechSynthesis.cancel();
         speechSynthesis.speak(utterance);
       } catch (err) {
         console.error('[TTS] Browser TTS failed:', err);
@@ -118,7 +193,7 @@ export default function Home() {
     } else {
       console.log('[TTS] Browser speech synthesis not available');
     }
-  }, [selectedVoice]);
+  }, [selectedVoice, audioUnlocked, unlockAudio]);
 
   // --- Speak wake-up line (repeated while asleep, different message when awake) ---
   useEffect(() => {
@@ -138,9 +213,20 @@ export default function Home() {
     // Generate appropriate message based on state
     let message = "";
     
-    if (asleep && phase === "waking") {
+    if (asleep && (phase === "waking" || phase === "scanning")) {
       // While asleep: repeat wake-up messages every 5 seconds
-      message = agentSay?.trim() || "Wake up! Time to wake up!";
+      const wakeMessages = [
+        "Wake up! Time to wake up!",
+        "Good morning! Rise and shine!",
+        "Hey, time to get up!",
+        "Wake up, sleepyhead!",
+        "Time to start your day!",
+        "Hey, wake up!",
+        "Morning! Time to get up!",
+      ];
+      // Use backend message if available, otherwise use our own rotation
+      message = agentSay?.trim() || wakeMessages[Math.floor(now / 5000) % wakeMessages.length];
+      
       if (timeSinceLastSpeak < 5000) { // 5 second cooldown for repetition
         console.log('[TTS Debug] Skipping - rate limited (5s cooldown for repetition)');
         return;
@@ -245,15 +331,23 @@ export default function Home() {
             <button
               onClick={() => {
                 console.log('[Manual TTS] Testing TTS...');
+                unlockAudio(); // Ensure audio is unlocked
                 playTTS("Good morning! This is a manual test of the text-to-speech system.");
               }}
               className="px-3 py-1.5 rounded-md bg-emerald-500/20 border border-emerald-500/30 text-xs hover:bg-emerald-500/30 transition-colors text-emerald-400"
             >
               Test TTS
             </button>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${audioUnlocked ? "bg-emerald-400" : "bg-amber-400"}`} />
+              <span className="text-xs text-zinc-400">
+                {audioUnlocked ? "Audio Ready" : "Click to enable audio"}
+              </span>
+            </div>
             <button
               onClick={() => {
                 console.log('[Simulate Sleep] Simulating sleep detection...');
+                unlockAudio(); // Ensure audio is unlocked
                 // Manually trigger the TTS by directly calling the function
                 // This bypasses all the agent logic to test the audio chain
                 lastAgentSpeakRef.current = { text: "", at: 0 }; // Reset rate limiting
