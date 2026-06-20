@@ -204,7 +204,7 @@ export default function Home() {
     }, 15000);
   }, [playTTS, listenSTT]);
 
-  // --- Handle CV detections → injury pins + voice ---
+  // --- Handle CV detections -> injury pins + voice ---
   useEffect(() => {
     if (!cameraOn || !backend.detections.length) return;
 
@@ -230,8 +230,6 @@ export default function Home() {
     const lat = AREA.north - (pinY + 0.5) * cellH;
     const lng = AREA.west + (pinX + 0.5) * cellW;
 
-    let isNewPin = false;
-
     setInjuries((prev) => {
       const existing = prev.find(
         (p) =>
@@ -245,7 +243,6 @@ export default function Home() {
             : p,
         );
       }
-      isNewPin = true;
       pinIdCounter++;
       return [
         ...prev,
@@ -377,51 +374,55 @@ export default function Home() {
   }, [robotDir, backend]);
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden font-mono">
-      {/* Header */}
-      <header className="flex items-center justify-between px-5 py-2.5 border-b border-border bg-panel shrink-0">
-        <div className="flex items-center gap-3">
-          <span className="text-lg font-bold tracking-tight text-accent">
-            ROBOTHELPER
-          </span>
-          <span className="text-xs text-foreground/40 uppercase tracking-[0.15em] hidden sm:inline">
+    <div className="flex flex-col h-screen overflow-hidden">
+      {/* Navigation — glass morphism header */}
+      <header className="glass-strong flex items-center justify-between px-6 py-3 shrink-0 z-50">
+        <div className="flex items-center gap-4">
+          <h1 className="text-lg font-semibold tracking-tight">
+            <span className="gradient-text-purple">RobotHelper</span>
+          </h1>
+          <span className="text-xs text-muted uppercase tracking-[0.2em] hidden sm:inline">
             Search &amp; Rescue Ops
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center gap-4">
+          {/* Connection status pill */}
+          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.06]">
             <span
               className={`w-2 h-2 rounded-full ${
                 backend.robotConnected
                   ? "bg-emerald-400"
                   : backend.connected
-                    ? "bg-amber-400 animate-pulse"
-                    : "bg-red-400 animate-pulse"
+                    ? "bg-amber-400"
+                    : "bg-red-400"
               }`}
+              style={{ animation: !backend.robotConnected ? "dot-pulse 2s ease-in-out infinite" : undefined }}
             />
-            <span className="text-foreground/50">
+            <span className="text-xs text-zinc-400">
               {backend.robotConnected
-                ? "ROBOT ONLINE"
+                ? "Robot Online"
                 : backend.connected
-                  ? "ROBOT OFFLINE — CV ACTIVE"
-                  : "BACKEND OFFLINE"}
+                  ? "CV Active"
+                  : "Offline"}
             </span>
           </div>
+          {/* Camera toggle */}
           <button
             onClick={() => setCameraOn((c) => !c)}
-            className={`px-3 py-1.5 text-xs rounded border transition-colors cursor-pointer ${
+            className={`px-4 py-1.5 text-xs font-medium rounded-full transition-all cursor-pointer ${
               cameraOn
-                ? "border-accent/50 text-accent"
-                : "border-border text-foreground/50 hover:text-accent hover:border-accent/50"
+                ? "bg-accent/15 text-accent-light border border-accent/30"
+                : "bg-white/[0.04] text-zinc-400 border border-white/[0.06] hover:text-accent-light hover:border-accent/30"
             }`}
           >
-            {cameraOn ? "CAM ON" : "CAM OFF"}
+            {cameraOn ? "Cam On" : "Cam Off"}
           </button>
+          {/* Reset button */}
           <button
             onClick={reset}
-            className="px-3 py-1.5 text-xs rounded border border-border text-foreground/50 hover:text-red-400 hover:border-red-400/50 transition-colors cursor-pointer"
+            className="px-4 py-1.5 text-xs font-medium rounded-full bg-white/[0.04] text-zinc-400 border border-white/[0.06] hover:text-red-400 hover:border-red-400/30 transition-all cursor-pointer"
           >
-            RESET
+            Reset
           </button>
         </div>
       </header>
@@ -429,8 +430,8 @@ export default function Home() {
       {/* Main content */}
       <div className="flex flex-1 min-h-0">
         {/* Map panel */}
-        <div className="w-[60%] p-3 border-r border-border">
-          <div className="h-full rounded-lg overflow-hidden border border-border relative">
+        <div className="w-[60%] p-4">
+          <div className="h-full rounded-2xl overflow-hidden border border-white/[0.06] relative bg-surface">
             <SearchMap
               grid={grid}
               robotPos={robotPos}
@@ -440,17 +441,18 @@ export default function Home() {
               injuries={injuries}
               onPinClick={handlePinClick}
             />
-            <div className="absolute top-3 left-3 z-[1000] bg-panel/95 backdrop-blur-sm px-3 py-1.5 rounded border border-border">
-              <span className="text-xs text-accent uppercase tracking-widest">
+            {/* Zone label — glass overlay */}
+            <div className="absolute top-4 left-4 z-[1000] glass px-4 py-2 rounded-full">
+              <span className="text-xs text-accent-light uppercase tracking-[0.15em] font-medium">
                 Forest Search Zone — Temescal Canyon
               </span>
             </div>
 
-            {/* Injury log overlay inside the map */}
+            {/* Injury log overlay */}
             {panelOpen && (
-              <div className="absolute top-3 right-3 z-[1000] w-64 max-h-[calc(100%-24px)] bg-panel/95 backdrop-blur-sm rounded-lg border border-border flex flex-col shadow-lg shadow-black/40">
-                <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
-                  <span className="text-[10px] font-mono text-red-400 uppercase tracking-widest">
+              <div className="absolute top-4 right-4 z-[1000] w-72 max-h-[calc(100%-32px)] glass-strong rounded-2xl flex flex-col shadow-2xl shadow-black/60">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] shrink-0">
+                  <span className="text-[11px] font-medium text-red-400 uppercase tracking-[0.15em]">
                     Injury Log
                   </span>
                   <button
@@ -458,15 +460,15 @@ export default function Home() {
                       setPanelOpen(false);
                       setSelectedPin(null);
                     }}
-                    className="text-foreground/40 hover:text-foreground text-[10px] cursor-pointer"
+                    className="text-zinc-500 hover:text-zinc-300 text-sm cursor-pointer transition-colors"
                   >
-                    ✕
+                    &times;
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-2 space-y-1.5 min-h-0">
+                <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
                   {injuries.length === 0 ? (
-                    <div className="text-center text-[10px] text-foreground/30 py-6">
+                    <div className="text-center text-xs text-zinc-600 py-8">
                       No injuries detected yet.
                     </div>
                   ) : (
@@ -474,32 +476,32 @@ export default function Home() {
                       <div
                         key={pin.id}
                         onClick={() => setSelectedPin(pin.id)}
-                        className={`px-2.5 py-2 rounded border cursor-pointer transition-colors ${
+                        className={`px-3 py-2.5 rounded-xl cursor-pointer transition-all ${
                           selectedPin === pin.id
-                            ? "border-red-500/60 bg-red-500/15"
-                            : "border-white/5 hover:border-red-500/30 hover:bg-red-500/5"
+                            ? "bg-red-500/10 border border-red-500/30"
+                            : "bg-white/[0.02] border border-white/[0.04] hover:border-red-500/20 hover:bg-red-500/5"
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-0.5">
-                          <span className="text-[10px] text-red-400 font-bold">
-                            INJURED{pin.count > 1 ? ` ×${pin.count}` : ""}
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[11px] text-red-400 font-semibold">
+                            INJURED{pin.count > 1 ? ` x${pin.count}` : ""}
                           </span>
-                          <span className="text-[9px] text-foreground/40">
+                          <span className="text-[10px] text-zinc-500">
                             {new Date(pin.timestamp).toLocaleTimeString()}
                           </span>
                         </div>
-                        <div className="text-[9px] text-foreground/50">
+                        <div className="text-[10px] text-zinc-500 font-mono">
                           ({pin.gridX}, {pin.gridY}) — {pin.lat.toFixed(5)}, {pin.lng.toFixed(5)}
                         </div>
-                        <div className="mt-1.5 flex flex-col gap-1">
+                        <div className="mt-2 flex gap-1.5">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               handleApproach();
                             }}
-                            className="w-full flex items-center justify-center gap-1 px-2 py-1 text-[9px] uppercase tracking-wider rounded border border-emerald-400/40 text-emerald-400 hover:bg-emerald-400/10 transition-colors cursor-pointer"
+                            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20 transition-all cursor-pointer"
                           >
-                            ▶ Approach
+                            Approach
                           </button>
                           <button
                             onClick={(e) => {
@@ -507,14 +509,14 @@ export default function Home() {
                               triggerVoice();
                             }}
                             disabled={voiceStatus !== "idle" && voiceStatus !== "done"}
-                            className="w-full flex items-center justify-center gap-1 px-2 py-1 text-[9px] uppercase tracking-wider rounded border border-accent/40 text-accent hover:bg-accent/10 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 text-[10px] font-medium uppercase tracking-wider rounded-lg bg-accent/10 border border-accent/25 text-accent-light hover:bg-accent/20 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                           >
                             {voiceStatus === "speaking" || voiceStatus === "responding" ? (
                               <span className="animate-pulse">Speaking...</span>
                             ) : voiceStatus === "listening" ? (
                               <span className="animate-pulse">Listening...</span>
                             ) : (
-                              <>🔊 Hail</>
+                              "Hail"
                             )}
                           </button>
                         </div>
@@ -523,11 +525,11 @@ export default function Home() {
                   )}
                 </div>
 
-                <div className="px-3 py-2 border-t border-border shrink-0 flex items-center justify-between text-[10px]">
-                  <span className="text-foreground/40">
+                <div className="px-4 py-2.5 border-t border-white/[0.06] shrink-0 flex items-center justify-between text-[11px]">
+                  <span className="text-zinc-500">
                     {injuries.length} location{injuries.length !== 1 ? "s" : ""}
                   </span>
-                  <span className="text-red-400 font-bold">
+                  <span className="text-red-400 font-semibold">
                     {totalInjured} injured
                   </span>
                 </div>
@@ -536,8 +538,9 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Camera + Stats panel */}
-        <div className="w-[40%] flex flex-col p-3 gap-3">
+        {/* Right panel — Camera + Status */}
+        <div className="w-[40%] flex flex-col p-4 pl-0 gap-3">
+          {/* Camera feed */}
           <div className="flex-1 min-h-0">
             {cameraOn ? (
               <VideoFeed
@@ -547,69 +550,71 @@ export default function Home() {
                 backendConnected={backend.connected}
               />
             ) : (
-              <div className="h-full bg-panel rounded-lg border border-border flex items-center justify-center">
-                <span className="text-sm font-mono text-zinc-500 uppercase">
+              <div className="h-full bg-surface rounded-2xl border border-white/[0.06] flex items-center justify-center">
+                <span className="text-sm text-zinc-600">
                   Camera Disabled
                 </span>
               </div>
             )}
           </div>
 
-          <div className="shrink-0 space-y-2">
+          {/* Status panels */}
+          <div className="shrink-0 space-y-3">
             <AgentStatus agent={backend.agent} feelings={backend.feelings} />
 
             <NewsAlert />
 
+            {/* Stats row */}
             <div className="flex gap-2">
               <Stat
                 label="Cleared"
                 value={`${pct}%`}
-                accent="text-emerald-400"
+                color="text-emerald-400"
               />
               <Stat
                 label="Scanned"
                 value={`${cleared}/${ACTIVE_CELLS}`}
-                accent="text-cyan-400"
+                color="text-accent-light"
               />
               <Stat
                 label="Injured"
                 value={`${totalInjured}`}
-                accent="text-red-400"
+                color="text-red-400"
               />
               <Stat
                 label="Pins"
                 value={`${injuries.length}`}
-                accent="text-amber-400"
+                color="text-amber-400"
               />
             </div>
 
             {/* Voice interaction panel */}
             {voiceStatus !== "idle" && (
-              <div className="px-3 py-2.5 rounded border border-border bg-panel space-y-1.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-accent">🔊</span>
-                  <span className="text-foreground/60 uppercase tracking-wider text-[10px]">
+              <div className="px-4 py-3 rounded-2xl border border-white/[0.06] bg-surface space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-accent" style={{ animation: "dot-pulse 1.5s ease-in-out infinite" }} />
+                  <span className="text-[11px] text-zinc-400 uppercase tracking-[0.15em] font-medium">
                     Voice Assistant
                   </span>
                 </div>
-                <div className="text-xs text-foreground/80">
-                  🤖 &quot;Do you need assistance?&quot;
+                <div className="text-xs text-zinc-300">
+                  &quot;Do you need assistance?&quot;
                 </div>
                 {voiceStatus === "speaking" && (
-                  <div className="text-[10px] text-amber-400 animate-pulse">
+                  <div className="text-[11px] text-amber-400 animate-pulse">
                     Speaking...
                   </div>
                 )}
                 {voiceStatus === "listening" && (
-                  <div className="text-[10px] text-cyan-400 animate-pulse">
-                    🎤 Listening...
+                  <div className="text-[11px] text-accent-light animate-pulse">
+                    Listening...
                   </div>
                 )}
                 {(voiceStatus === "responding" || voiceStatus === "done") &&
                   voiceTranscript && (
                     <>
                       <div className="text-xs text-emerald-300">
-                        💬 &quot;{voiceTranscript}&quot;
+                        &quot;{voiceTranscript}&quot;
                       </div>
                       {(() => {
                         const t = voiceTranscript.toLowerCase();
@@ -626,18 +631,18 @@ export default function Home() {
                           : "Understood. Stay safe. Flagging your position for the rescue team.";
                         return (
                           <>
-                            <div className="text-xs text-foreground/80">
-                              🤖 &quot;{replyText}&quot;
+                            <div className="text-xs text-zinc-300">
+                              &quot;{replyText}&quot;
                             </div>
                             {voiceStatus === "responding" && (
-                              <div className="text-[10px] text-amber-400 animate-pulse">
+                              <div className="text-[11px] text-amber-400 animate-pulse">
                                 Speaking...
                               </div>
                             )}
                             {voiceStatus === "done" && needsHelp && (
-                              <div className="mt-1 px-2.5 py-2 rounded bg-red-600/20 border border-red-500/50 text-[10px] text-red-300 space-y-1">
-                                <div className="font-bold uppercase tracking-wider text-red-400">
-                                  ⚠ Emergency Response Recommended
+                              <div className="mt-1.5 px-3 py-2.5 rounded-xl bg-red-500/10 border border-red-500/25 text-[11px] text-red-300 space-y-1">
+                                <div className="font-semibold uppercase tracking-wider text-red-400">
+                                  Emergency Response Recommended
                                 </div>
                                 <div className="text-red-300/80">
                                   Person requires immediate assistance. Dispatch
@@ -646,7 +651,7 @@ export default function Home() {
                               </div>
                             )}
                             {voiceStatus === "done" && !needsHelp && (
-                              <div className="mt-1 px-2.5 py-2 rounded bg-emerald-600/10 border border-emerald-500/30 text-[10px] text-emerald-400">
+                              <div className="mt-1.5 px-3 py-2.5 rounded-xl bg-emerald-500/8 border border-emerald-500/20 text-[11px] text-emerald-400">
                                 Person declined assistance — no action needed.
                               </div>
                             )}
@@ -659,7 +664,7 @@ export default function Home() {
             )}
 
             {!backend.robotConnected && (
-              <div className="px-3 py-2 rounded border border-border bg-panel text-[10px] text-foreground/40 text-center uppercase tracking-wider">
+              <div className="px-4 py-2.5 rounded-xl border border-white/[0.04] bg-white/[0.02] text-[11px] text-zinc-500 text-center tracking-wide">
                 Use W A S D or arrow keys to move the robot
               </div>
             )}
@@ -673,18 +678,18 @@ export default function Home() {
 function Stat({
   label,
   value,
-  accent,
+  color,
 }: {
   label: string;
   value: string;
-  accent: string;
+  color: string;
 }) {
   return (
-    <div className="flex-1 px-3 py-2 rounded border border-border bg-panel">
-      <div className="text-[9px] text-foreground/40 uppercase tracking-wide">
+    <div className="flex-1 px-3 py-2.5 rounded-xl border border-white/[0.06] bg-surface">
+      <div className="text-[10px] text-zinc-500 uppercase tracking-wide font-medium">
         {label}
       </div>
-      <div className={`text-sm font-bold ${accent}`}>{value}</div>
+      <div className={`text-sm font-semibold ${color}`}>{value}</div>
     </div>
   );
 }

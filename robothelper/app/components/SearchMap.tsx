@@ -39,14 +39,14 @@ const CELL_STYLE: Record<CellState, PathOptions> = {
   unsearched: {
     color: "#ef4444",
     fillColor: "#ef4444",
-    fillOpacity: 0.18,
+    fillOpacity: 0.12,
     weight: 0.5,
-    opacity: 0.2,
+    opacity: 0.15,
   },
   clear: {
     color: "transparent",
     fillColor: "#22c55e",
-    fillOpacity: 0.22,
+    fillOpacity: 0.18,
     weight: 0,
   },
 };
@@ -63,15 +63,15 @@ function makeRobotIcon(dir: "n" | "s" | "e" | "w") {
     ">
       <div style="
         position:absolute;inset:4px;border-radius:50%;
-        background:radial-gradient(circle,rgba(34,211,238,0.35) 0%,transparent 70%);
+        background:radial-gradient(circle,rgba(139,92,246,0.35) 0%,transparent 70%);
         animation:pulse-glow 1.5s ease-in-out infinite;
       "></div>
       <div style="
         position:absolute;top:50%;left:50%;
         transform:translate(-50%,-50%);
         width:18px;height:18px;
-        background:#22d3ee;border:2.5px solid #fff;border-radius:50%;
-        box-shadow:0 0 16px rgba(34,211,238,0.8);
+        background:#8b5cf6;border:2.5px solid #fff;border-radius:50%;
+        box-shadow:0 0 16px rgba(139,92,246,0.8);
       "></div>
       <div style="
         position:absolute;top:3px;left:50%;
@@ -79,8 +79,8 @@ function makeRobotIcon(dir: "n" | "s" | "e" | "w") {
         width:0;height:0;
         border-left:7px solid transparent;
         border-right:7px solid transparent;
-        border-bottom:12px solid #22d3ee;
-        filter:drop-shadow(0 0 4px rgba(34,211,238,0.6));
+        border-bottom:12px solid #8b5cf6;
+        filter:drop-shadow(0 0 4px rgba(139,92,246,0.6));
       "></div>
     </div>`,
     iconSize: [44, 44],
@@ -95,10 +95,10 @@ const injuryIcon = L.divIcon({
     background:radial-gradient(circle,#ef4444 40%,transparent 70%);
     border:2px solid #fca5a5;border-radius:50%;
     display:flex;align-items:center;justify-content:center;
-    font-size:14px;color:white;
-    box-shadow:0 0 12px rgba(239,68,68,0.7);
+    font-size:13px;color:white;font-weight:600;
+    box-shadow:0 0 14px rgba(239,68,68,0.6);
     cursor:pointer;
-  ">⚠</div>`,
+  ">!</div>`,
   iconSize: [28, 28],
   iconAnchor: [14, 14],
 });
@@ -146,22 +146,22 @@ export default function SearchMap({
           key={`trail-${i}`}
           positions={trail}
           pathOptions={{
-            color: "#fbbf24",
+            color: "#a78bfa",
             weight: 2,
-            opacity: 0.5,
+            opacity: 0.4,
             dashArray: "6 4",
           }}
         />
       ))}
 
-      {/* Search zone perimeter — solid line */}
+      {/* Search zone perimeter */}
       <Polygon
         positions={SEARCH_ZONE}
         pathOptions={{
-          color: "#f97316",
+          color: "#8b5cf6",
           weight: 2.5,
           fill: false,
-          opacity: 0.85,
+          opacity: 0.7,
         }}
       />
 

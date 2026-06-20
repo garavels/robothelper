@@ -12,20 +12,20 @@ interface Props {
 }
 
 const CELL_STYLE: Record<CellState, string> = {
-  danger: "bg-red-100 border border-red-200/60",
-  clear: "bg-emerald-100 border border-emerald-200/60",
-  "person-injured": "bg-red-400/70 border border-red-400 animate-pulse",
-  "person-ok": "bg-sky-300/60 border border-sky-400/60",
+  danger: "bg-red-500/15 border border-red-500/20",
+  clear: "bg-emerald-500/15 border border-emerald-500/20",
+  "person-injured": "bg-red-400/60 border border-red-400 animate-pulse",
+  "person-ok": "bg-accent/30 border border-accent/40",
 };
 
 function MapGrid({ grid, robotPos, rows, cols }: Props) {
   return (
-    <div className="relative h-full bg-panel rounded-xl border border-border overflow-hidden flex flex-col shadow-sm">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <span className="text-[10px] font-mono text-accent uppercase tracking-widest">
+    <div className="relative h-full bg-surface rounded-2xl border border-white/[0.06] overflow-hidden flex flex-col">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06]">
+        <span className="text-[11px] text-accent-light uppercase tracking-[0.15em] font-medium">
           Area Map — Sector Alpha
         </span>
-        <span className="text-[10px] font-mono text-foreground/30">
+        <span className="text-[11px] text-zinc-500 font-mono">
           {cols}&times;{rows}
         </span>
       </div>
@@ -44,9 +44,9 @@ function MapGrid({ grid, robotPos, rows, cols }: Props) {
                 <div
                   key={`${x}-${y}`}
                   className={`
-                    rounded-[2px] transition-colors duration-500
+                    rounded-[3px] transition-colors duration-500
                     ${CELL_STYLE[cell]}
-                    ${isRobot ? "!bg-cyan-500 !border-cyan-600 z-10 relative" : ""}
+                    ${isRobot ? "!bg-accent !border-accent z-10 relative" : ""}
                   `}
                   style={isRobot ? { animation: "pulse-glow 1.5s ease-in-out infinite" } : undefined}
                 />
