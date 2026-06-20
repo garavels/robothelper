@@ -182,16 +182,31 @@ class InterHumanClient:
     async def _connect(self, websockets):
         headers = {"Authorization": f"Bearer {self.api_key}"}
         connect = websockets.connect
-        for kwargs in (
+        
+        print(f"[interhuman] Trying connection methods for {WS_URL}")
+        
+        for i, kwargs in enumerate((
             {"additional_headers": headers, "max_size": None},  # websockets >= 13 asyncio client
             {"extra_headers": headers, "max_size": None},        # legacy client
             {"subprotocols": [self.api_key], "max_size": None},  # API key as subprotocol
-        ):
+        )):
             try:
-                return await connect(WS_URL, **kwargs)
-            except TypeError:
+                print(f"[interhuman] Attempt {i+1}: {kwargs}")
+                ws = await connect(WS_URL, **kwargs)
+                print(f"[interhuman] Connection succeeded with method {i+1}")
+                return ws
+            except TypeError as e:
+                print(f"[interhuman] Method {i+1} failed with TypeError: {e}")
                 continue
+            except Exception as e:
+                print(f"[interhuman] Method {i+1} failed with {type(e).__name__}: {e}")
+                # If it's not a TypeError, re-raise as this might be the real connection error
+                if i == 2:  # Last attempt
+                    raise
+                continue
+        
         # Last resort: no auth kwargs (will likely fail auth, but surfaces a clear error)
+        print(f"[interhuman] Trying last resort: no auth")
         return await connect(WS_URL, max_size=None)
 
     # ── send / receive loops ──────────────────────────────────────────
@@ -245,15 +260,21 @@ class InterHumanClient:
 
         while self.running:
             try:
+                print(f"[interhuman] Attempting to connect to {WS_URL}")
                 ws = await self._connect(websockets)
             except Exception as e:  # noqa: BLE001
-                print(f"[interhuman] connect failed: {e} — retrying in 5s")
+                error_msg = f"connect failed: {e}"
+                print(f"[interhuman] {error_msg} — retrying in 5s")
+                self.latest["error"] = error_msg
+                self.latest["connected"] = False
                 await asyncio.sleep(5)
                 continue
 
             print("[interhuman] connected")
             self.latest["connected"] = True
-            self.latest["error"] = None
+            self.latest["error"] = None  # Clear any previous connection errors
+            self.latest["updated"] = time.time()
+            print(f"[interhuman] Error cleared, updated timestamp: {self.latest['updated']}")
             try:
                 await ws.send(json.dumps({"include": ["conversation_quality_overall"]}))
                 sender = asyncio.create_task(self._sender(ws))
@@ -264,7 +285,9 @@ class InterHumanClient:
                 for task in pending:
                     task.cancel()
             except Exception as e:  # noqa: BLE001
-                print(f"[interhuman] session error: {e}")
+                error_msg = f"session error: {e}"
+                print(f"[interhuman] {error_msg}")
+                self.latest["error"] = error_msg
             finally:
                 self.latest["connected"] = False
                 try:

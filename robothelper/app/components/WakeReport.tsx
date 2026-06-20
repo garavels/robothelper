@@ -1,6 +1,7 @@
 "use client";
 
 import type { AgentState, FeelingsState } from "../hooks/useBackend";
+import { useState } from "react";
 
 interface Props {
   agent: AgentState;
@@ -64,9 +65,57 @@ function grogColor(g: number): { bar: string; text: string; word: string } {
 }
 
 export default function WakeReport({ agent, feelings }: Props) {
+  const [downloading, setDownloading] = useState(false);
   const phase = PHASE[agent.phase] ?? PHASE.scanning;
   const grog = grogColor(agent.grogginess);
   const summary = agent.reaction_summary || agent.assessment;
+
+  const downloadEmotionReport = async () => {
+    setDownloading(true);
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000"}/api/emotion-report`);
+      const data = await response.json();
+      
+      if (data.error) {
+        alert(data.error);
+        return;
+      }
+
+      // Create a downloadable JSON file
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `wake-up-emotion-report-${new Date().toISOString().split("T")[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Failed to download emotion report:", error);
+      alert("Failed to download emotion report");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const clearEmotionLog = async () => {
+    if (!confirm("Are you sure you want to clear the emotion log? This cannot be undone.")) {
+      return;
+    }
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000"}/api/emotion-report/clear`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      if (data.status === "cleared") {
+        alert("Emotion log cleared successfully!");
+      }
+    } catch (error) {
+      console.error("Failed to clear emotion log:", error);
+      alert("Failed to clear emotion log");
+    }
+  };
 
   return (
     <div className="h-full flex flex-col rounded-lg border border-border bg-panel overflow-hidden">
@@ -75,12 +124,27 @@ export default function WakeReport({ agent, feelings }: Props) {
         <span className="text-xs uppercase tracking-widest text-accent">
           Wake-Up Report
         </span>
-        <span className="flex items-center gap-2 text-[10px] uppercase tracking-wider font-bold">
-          <span className={`w-1.5 h-1.5 rounded-full ${phase.dot}`} />
-          <span className={agent.enabled ? "text-foreground/70" : "text-foreground/40"}>
-            {agent.enabled ? agent.phase : "offline"}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={downloadEmotionReport}
+            disabled={downloading}
+            className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-500/30 text-[10px] text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {downloading ? "Downloading..." : "📊 Download Report"}
+          </button>
+          <button
+            onClick={clearEmotionLog}
+            className="px-2 py-1 rounded bg-red-500/20 border border-red-500/30 text-[10px] text-red-300 hover:bg-red-500/30 transition-colors"
+          >
+            🗑️ Clear Log
+          </button>
+          <span className="flex items-center gap-2 text-[10px] uppercase tracking-wider font-bold">
+            <span className={`w-1.5 h-1.5 rounded-full ${phase.dot}`} />
+            <span className={agent.enabled ? "text-foreground/70" : "text-foreground/40"}>
+              {agent.enabled ? agent.phase : "offline"}
+            </span>
           </span>
-        </span>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
@@ -96,6 +160,19 @@ export default function WakeReport({ agent, feelings }: Props) {
           <div className="text-sm font-bold tracking-tight">{phase.label}</div>
           <div className="text-[11px] opacity-80">{phase.sub}</div>
         </div>
+
+        {/* Emotion logging indicator */}
+        {agent.phase === "awake" && (
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-xs font-medium text-emerald-300">Recording emotions...</span>
+            </div>
+            <div className="text-[10px] text-emerald-200/70 mt-1">
+              How you feel when waking up is being logged
+            </div>
+          </div>
+        )}
 
         {/* Grogginess gauge */}
         <div className="space-y-1.5">
@@ -126,6 +203,11 @@ export default function WakeReport({ agent, feelings }: Props) {
               {feelings.connected ? feelings.engagement : "InterHuman offline"}
             </span>
           </div>
+          {feelings.error && (
+            <div className="text-[9px] text-red-400/80">
+              ⚠️ InterHuman error: {typeof feelings.error === 'string' ? feelings.error : 'Connection failed'}
+            </div>
+          )}
           {feelings.signals.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {feelings.signals.slice(0, 8).map((s, i) => (
@@ -142,7 +224,7 @@ export default function WakeReport({ agent, feelings }: Props) {
             </div>
           ) : (
             <div className="text-[10px] text-foreground/30">
-              No social signals yet.
+              {feelings.connected ? "No social signals yet." : "InterHuman not connected - emotions unavailable"}
             </div>
           )}
         </div>

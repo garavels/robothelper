@@ -99,8 +99,15 @@ class State:
             "engagement": "unknown",
             "signals": [],
             "quality": None,
+            "error": None,
             "updated": 0.0,
         }
+        # Emotion logging for wake-up reports
+        self.emotion_log: list[dict] = []
+        self.emotion_logging_start: float | None = None
+        # Emotion logging for wake-up reports
+        emotion_log: list[dict] = []
+        emotion_logging_start: float | None = None
 
 
 state = State()
@@ -145,6 +152,7 @@ def connect_robot():
             state.robot = cw.twin(CYBERWAVE_ASSET, twin_id=twin_uuid)
         state.robot_connected = True
         print(f"[robot] Connected: {state.robot.uuid}  asset={CYBERWAVE_ASSET}  (affect={CYBERWAVE_AFFECT})")
+        print(f"[robot] View your simulation at: https://cyberwave.com/playground?environment={os.getenv('CYBERWAVE_ENVIRONMENT_ID', '')}")
     except Exception as e:
         print(f"[robot] Connection failed: {e}")
         state.robot_connected = False
@@ -197,7 +205,11 @@ def camera_loop():
         if frame is not None:
             # Feed the InterHuman segment buffer with the raw frame.
             if state.ih_client is not None:
-                state.ih_client.push_frame(frame)
+                try:
+                    state.ih_client.push_frame(frame)
+                except Exception as e:
+                    print(f"[interhuman] Error pushing frame to InterHuman: {e}")
+                    # Don't disable InterHuman on transient errors, just log and continue
 
             raw_b64 = _encode_jpeg_b64(frame)
 
@@ -267,6 +279,16 @@ async def planner_loop():
 
     wake_issued = False    # have we already driven an approach for the current sleeper?
     absent_cycles = 0      # consecutive cycles with no person (re-arms wake_issued)
+    wake_message_index = 0  # for cycling through different wake-up messages
+    wake_messages = [
+        "Wake up! Time to wake up!",
+        "Good morning! Rise and shine!",
+        "Hey, time to get up!",
+        "Wake up, sleepyhead!",
+        "Time to start your day!",
+        "Hey, wake up!",
+        "Morning! Time to get up!",
+    ]
 
     while state.running:
         await asyncio.sleep(PLAN_INTERVAL)
@@ -279,6 +301,9 @@ async def planner_loop():
         feelings_now = _current_feelings()
         with state.lock:
             state.feelings = feelings_now
+            # Sync error state from InterHuman client if connected
+            if state.ih_client and state.ih_client.latest.get("error") is None:
+                state.feelings["error"] = None
             state.agent["status"] = "planning"
 
         result = await asyncio.to_thread(planner.plan, frame_b64, feelings_now)
@@ -309,6 +334,7 @@ async def planner_loop():
         assessment = str(plan_obj.get("assessment", ""))
         reaction_summary = str(plan_obj.get("reaction_summary", ""))
         say = str(plan_obj.get("say", ""))
+        print(f"[agent] Planner generated 'say': '{say}' (asleep={asleep}, person_present={person_present})")
 
         actions, errors = drive.validate_and_clamp(plan_obj.get("actions"))
         executed: list[dict] = []
@@ -324,12 +350,15 @@ async def planner_loop():
                 wake_issued = False    # re-arm so the next sleeper can be woken
             phase = "scanning"
             say = ""
+            print(f"[agent] No person present, cleared 'say'")
         else:
             absent_cycles = 0
             if asleep:
                 phase = "waking"
                 if not say:
-                    say = "Good morning! Time to wake up!"
+                    say = wake_messages[wake_message_index % len(wake_messages)]
+                    wake_message_index += 1
+                    print(f"[agent] Set default wake-up message: '{say}'")
                 # Approach ONCE per sleeper (per demo choice); the frontend repeats
                 # the spoken wake-up line on a cooldown while they stay asleep.
                 if not wake_issued and actions and state.drive_exec is not None:
@@ -344,11 +373,48 @@ async def planner_loop():
             elif wake_issued:
                 phase = "awake"        # they woke after we nudged -> reaction report
                 say = ""
+                print(f"[agent] Person woke up, cleared 'say'")
+                # Start emotion logging when person wakes up
+                if state.emotion_logging_start is None:
+                    state.emotion_logging_start = time.time()
+                    print(f"[emotion] Started logging emotions at {state.emotion_logging_start}")
             else:
                 phase = "monitoring"   # already awake on arrival; nothing to do
                 say = ""
+                print(f"[agent] Person already awake, cleared 'say'")
 
         with state.lock:
+            # Handle emotion logging start/stop based on phase changes
+            old_phase = state.agent["phase"]
+            if old_phase != phase:
+                if phase == "awake" and state.emotion_logging_start is None:
+                    state.emotion_logging_start = time.time()
+                    print(f"[emotion] Started logging emotions (phase: {old_phase} -> {phase})")
+                elif old_phase == "awake" and phase != "awake":
+                    state.emotion_logging_start = None
+                    print(f"[emotion] Stopped emotion logging (phase: {old_phase} -> {phase})")
+            
+            # Log emotions periodically while awake
+            if phase == "awake" and state.emotion_logging_start is not None:
+                current_feelings = _current_feelings()
+                # Log even if InterHuman is unavailable - use basic data
+                log_entry = {
+                    "timestamp": time.time(),
+                    "time_since_wake": time.time() - state.emotion_logging_start,
+                    "engagement": current_feelings.get("engagement", "unknown"),
+                    "signals": current_feelings.get("signals", []),
+                    "quality": current_feelings.get("quality"),
+                    "grogginess": grogginess,
+                    "reaction_summary": reaction_summary,
+                    "interhuman_available": current_feelings.get("updated", 0) > 0,
+                }
+                # Avoid duplicate logging (only log if feelings changed or 5+ seconds passed)
+                if not state.emotion_log or \
+                   (time.time() - state.emotion_log[-1]["timestamp"] >= 5.0) or \
+                   (current_feelings.get("engagement") != state.emotion_log[-1].get("engagement")):
+                    state.emotion_log.append(log_entry)
+                    print(f"[emotion] Logged emotion entry: {log_entry['engagement']}, signals: {len(log_entry['signals'])}, interhuman: {log_entry['interhuman_available']}")
+
             state.agent.update({
                 "phase": phase,
                 "status": status,
@@ -377,6 +443,10 @@ async def broadcaster():
                 dets = list(state.detections)
                 agent_snapshot = dict(state.agent)
                 feelings_snapshot = _current_feelings()
+                
+                # Ensure error state is synced from InterHuman client
+                if state.ih_client and state.ih_client.latest.get("error") is None:
+                    feelings_snapshot["error"] = None
 
             if fb:
                 payload = json.dumps({
@@ -410,19 +480,43 @@ async def lifespan(_app: FastAPI):
         robot=state.robot, cw=state.cw, affect=CYBERWAVE_AFFECT, dry_run=AGENT_DRY_RUN
     )
     ih_key = os.getenv("INTERHUMAN_API_KEY", "")
-    state.ih_client = feelings.InterHumanClient(api_key=ih_key, fps=TARGET_FPS)
+    if ih_key:
+        try:
+            state.ih_client = feelings.InterHumanClient(api_key=ih_key, fps=TARGET_FPS)
+            print("[interhuman] InterHuman client initialized")
+            # Clear any stale error in state.feelings
+            state.feelings["error"] = None
+        except Exception as e:
+            print(f"[interhuman] Failed to initialize InterHuman client: {e}")
+            state.feelings["error"] = f"Initialization failed: {e}"
+            state.ih_client = None
+    else:
+        print("[interhuman] No INTERHUMAN_API_KEY set, feelings sensor disabled")
+        state.feelings["error"] = "No API key configured"
+        state.ih_client = None
 
     threading.Thread(target=camera_loop, daemon=True).start()
 
     tasks = [
         asyncio.create_task(broadcaster()),
         asyncio.create_task(planner_loop()),
-        asyncio.create_task(state.ih_client.run()),
     ]
+    
+    # Only add InterHuman task if client was successfully initialized
+    if state.ih_client:
+        try:
+            tasks.append(asyncio.create_task(state.ih_client.run()))
+        except Exception as e:
+            print(f"[interhuman] Failed to start InterHuman task: {e}")
+            state.ih_client = None
+    
     yield
     state.running = False
     if state.ih_client:
-        state.ih_client.stop()
+        try:
+            state.ih_client.stop()
+        except Exception as e:
+            print(f"[interhuman] Error stopping InterHuman client: {e}")
     for task in tasks:
         task.cancel()
 
@@ -634,6 +728,46 @@ async def tts_endpoint(req: TTSRequest):
     except Exception as e:
         print(f"[tts] Error: {e}")
         return Response(content=b"", media_type="audio/wav", status_code=502)
+
+
+@app.get("/api/emotion-report")
+async def emotion_report():
+    """Download a JSON report of emotions logged during wake-up."""
+    with state.lock:
+        emotion_data = list(state.emotion_log)
+        logging_active = state.emotion_logging_start is not None
+    
+    if not emotion_data and not logging_active:
+        return {"error": "No emotion data available. Complete a wake-up cycle first."}
+    
+    report = {
+        "report_generated": time.time(),
+        "logging_active": logging_active,
+        "total_entries": len(emotion_data),
+        "wake_up_session": {
+            "start_time": state.emotion_logging_start if logging_active else 
+                         (emotion_data[0]["timestamp"] if emotion_data else None),
+            "duration_seconds": (time.time() - state.emotion_logging_start) if logging_active else
+                              (emotion_data[-1]["timestamp"] - emotion_data[0]["timestamp"] if emotion_data else 0),
+        },
+        "emotion_timeline": emotion_data,
+        "summary": {
+            "avg_grogginess": sum(e.get("grogginess", 0) for e in emotion_data) / len(emotion_data) if emotion_data else 0,
+            "engagement_changes": len(set(e.get("engagement") for e in emotion_data)) if emotion_data else 0,
+            "total_signals_detected": sum(len(e.get("signals", [])) for e in emotion_data) if emotion_data else 0,
+        } if emotion_data else None
+    }
+    
+    return report
+
+
+@app.post("/api/emotion-report/clear")
+async def clear_emotion_report():
+    """Clear the emotion log to start fresh."""
+    with state.lock:
+        state.emotion_log = []
+        state.emotion_logging_start = None
+    return {"status": "cleared", "message": "Emotion log cleared"}
 
 
 @app.websocket("/ws")

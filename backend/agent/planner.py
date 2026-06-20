@@ -61,7 +61,7 @@ Each entry in "actions" must be one of:
 Rules:
 - If no person is visible: "person_present" = false, "asleep" = false, "grogginess" = 0, "actions" = [], "say" = "", and say so in "assessment".
 - If the person is AWAKE: "asleep" = false, "actions" = [], "say" = "". Still set a (low) "grogginess" and describe how alert/expressive they look in "reaction_summary".
-- If the person is ASLEEP: "asleep" = true. Approach conservatively: small forward steps (<= 0.5 m each), gentle turns. ALWAYS end an approach with a "stop". "say" = ONE short, friendly wake-up line (e.g. "Good morning! Time to wake up!").
+- If the person is ASLEEP: "asleep" = true. Approach conservatively: small forward steps (<= 0.5 m each), gentle turns. ALWAYS end an approach with a "stop". "say" = ONE short, friendly wake-up line (vary it each time: "Wake up!", "Time to wake up!", "Good morning!", "Hey, wake up!", "Rise and shine!", etc.).
 - Never output more than 8 actions.
 - "assessment" is ONE short sentence describing what you see.
 - Output ONLY the JSON object."""

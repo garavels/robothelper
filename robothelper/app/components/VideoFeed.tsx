@@ -16,11 +16,6 @@ export default function VideoFeed({
   cameraSource,
   backendConnected,
 }: Props) {
-  const injuredCount = useMemo(
-    () => detections.filter((d) => d.label === "INJURED").length,
-    [detections],
-  );
-
   const sourceLabel =
     cameraSource === "robot"
       ? "Robot Camera"
@@ -74,14 +69,6 @@ export default function VideoFeed({
           className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent pointer-events-none"
           style={{ animation: "scan 3s linear infinite" }}
         />
-
-        {/* Injury alert banner */}
-        {injuredCount > 0 && (
-          <div className="absolute bottom-0 inset-x-0 px-4 py-2.5 bg-red-600/90 backdrop-blur-sm text-white text-xs font-medium text-center tracking-wide animate-pulse">
-            {injuredCount} Potentially Injured Person
-            {injuredCount > 1 ? "s" : ""} Detected
-          </div>
-        )}
       </div>
 
       {/* Detection summary */}
@@ -90,7 +77,6 @@ export default function VideoFeed({
           <span className="text-emerald-400">
             OK: {detections.filter((d) => d.label === "OK").length}
           </span>
-          <span className="text-red-400">Injured: {injuredCount}</span>
         </div>
       )}
     </div>

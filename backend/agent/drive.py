@@ -210,9 +210,11 @@ class DriveExecutor:
         """Move the digital twin in Playground by integrating the plan into pose
         updates pushed over MQTT (dead-reckoning: forward along heading; turn = yaw).
         update_twin_position is the call that actually moves the base in Playground."""
+        print(f"[drive] Executing {len(actions)} actions in SIMULATION mode")
         results: list[dict] = []
         for a in actions:
             try:
+                print(f"[drive] Action: {a.describe()}")
                 if a.type in ("move_forward", "move_backward"):
                     d = a.distance if a.type == "move_forward" else -a.distance
                     steps = max(1, int(abs(d) / 0.05))  # ~5 cm substeps for smooth motion
@@ -221,6 +223,7 @@ class DriveExecutor:
                         self._y += (d / steps) * math.sin(self._yaw)
                         self._push_pose()
                         time.sleep(0.04)
+                    print(f"[drive] Moved to position: x={self._x:.2f}, y={self._y:.2f}, yaw={math.degrees(self._yaw):.1f}°")
                 elif a.type in ("turn_left", "turn_right"):
                     ang = a.angle if a.type == "turn_left" else -a.angle
                     steps = max(1, int(abs(ang) / 0.1))  # ~0.1 rad substeps
@@ -228,6 +231,7 @@ class DriveExecutor:
                         self._yaw += ang / steps
                         self._push_pose()
                         time.sleep(0.04)
+                    print(f"[drive] Turned to yaw: {math.degrees(self._yaw):.1f}°")
                 elif a.type == "wait":
                     time.sleep(a.duration)
                 elif a.type == "stop":
